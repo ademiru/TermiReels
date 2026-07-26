@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/njyeung/reels/backend"
-	"github.com/njyeung/reels/player"
+	"github.com/ademiru/TermiReels/backend"
+	"github.com/ademiru/TermiReels/player"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // CommentsPanel encapsulates the comments UI state and rendering
@@ -27,6 +28,10 @@ type CommentsPanel struct {
 	// GIF state
 	gifAnims      map[string]*player.GifAnimation
 	gifCellHeight int
+
+	// hearts records where each visible comment's like control was drawn,
+	// rebuilt on every View so a click can be mapped back to a comment
+	hearts []commentHeartHit
 }
 
 // NewCommentsPanel creates a new CommentsPanel instance
@@ -123,8 +128,8 @@ func (cp *CommentsPanel) commentLines(i int) int {
 	if _, ok := cp.gifAnims[comment.PK]; ok {
 		lines += cp.gifCellHeight
 	} else {
-		_, _, wrapWidth := cp.replyIndent(comment.ParentCommentID != "")
-		lines += len(wrapByWidth(strings.ReplaceAll(comment.Text, "\n", " "), wrapWidth))
+		layout := commentLayoutFor(cp.width, comment.ParentCommentID != "")
+		lines += len(wrapByWidth(strings.ReplaceAll(comment.Text, "\n", " "), layout.wrapWidth))
 	}
 	if cp.showsReplyHint(i) {
 		lines++ // "↳ N replies" hint
@@ -270,14 +275,150 @@ func (cp *CommentsPanel) showsReplyHint(i int) bool {
 	return true
 }
 
-// replyIndent returns the leading padding for a comment's username line, its
-// text lines, and the wrap width, distinguishing replies (extra indent) from
-// top-level comments.
-func (cp *CommentsPanel) replyIndent(isReply bool) (userIndent, textIndent string, wrapWidth int) {
-	if isReply {
-		return "  ", "    ", cp.width - 4
+// commentGutterCols is the width of the cursor bar drawn to the left of every
+// line of a comment.
+const commentGutterCols = 2
+
+// commentHeartHit records where one comment's like control was drawn, so a
+// click can be resolved back to the comment. row counts from the panel's first
+// content line; start and width are columns from the panel's left edge.
+type commentHeartHit struct {
+	index int
+	row   int
+	start int
+	width int
+}
+
+// HeartAt maps a click inside the panel to the comment whose like control it
+// landed on, or -1. row counts from the first content line, col from the
+// panel's left edge.
+func (cp *CommentsPanel) HeartAt(row, col int) int {
+	for _, h := range cp.hearts {
+		if h.row == row && col >= h.start && col < h.start+h.width {
+			return h.index
+		}
 	}
-	return "", "  ", cp.width - 2
+	return -1
+}
+
+// CommentAt returns the index of the comment stored at the given hit-box index.
+func (cp *CommentsPanel) CommentAt(i int) (backend.Comment, bool) {
+	if i < 0 || i >= len(cp.comments) {
+		return backend.Comment{}, false
+	}
+	return cp.comments[i], true
+}
+
+// SetCommentLiked flips a comment's like state optimistically, the way the
+// reel's own like does, so the UI answers immediately.
+func (cp *CommentsPanel) SetCommentLiked(i int, liked bool) {
+	if i < 0 || i >= len(cp.comments) {
+		return
+	}
+	c := &cp.comments[i]
+	if c.HasLikedComment == liked {
+		return
+	}
+	c.HasLikedComment = liked
+	if liked {
+		c.CommentLikeCount++
+	} else if c.CommentLikeCount > 0 {
+		c.CommentLikeCount--
+	}
+}
+
+// SetCommentLikedByPK updates a comment after an asynchronous backend result.
+// Replies can be inserted while that request is in flight, so an old numeric
+// index is not a safe identity for rollback.
+func (cp *CommentsPanel) SetCommentLikedByPK(pk string, liked bool) {
+	if i, ok := indexOfPK(cp.comments, pk); ok {
+		cp.SetCommentLiked(i, liked)
+	}
+}
+
+// commentLayout describes how one comment's lines are laid out: the indent for
+// its username line, for its text lines, the width text wraps at, and the
+// column a GIF is drawn at, counted from the panel's left edge.
+//
+// View and VisibleGifSlots both derive from this. They used to compute indents
+// separately, so changing one shifted the blank rows View reserves for a GIF
+// out from under the GIF itself.
+type commentLayout struct {
+	// userCols and textCols are how many columns sit before a comment's
+	// username line and its text lines. They are widths, not strings, because
+	// a reply's indent is drawn as branch glyphs whose shape depends on
+	// whether it is the last of its group — but never its width.
+	userCols  int
+	textCols  int
+	wrapWidth int
+	gifCol    int
+}
+
+// replyBranchCols is the width of a reply's branch indent: the corner glyph,
+// a dash, and a space.
+const replyBranchCols = 3
+
+func commentLayoutFor(width int, isReply bool) commentLayout {
+	if isReply {
+		return commentLayout{
+			userCols:  replyBranchCols,
+			textCols:  replyBranchCols,
+			wrapWidth: width - replyBranchCols - commentGutterCols,
+			gifCol:    commentGutterCols + replyBranchCols,
+		}
+	}
+	return commentLayout{
+		userCols:  0,
+		textCols:  2,
+		wrapWidth: width - 2 - commentGutterCols,
+		gifCol:    commentGutterCols + 2,
+	}
+}
+
+// commentGutter renders the bar that marks the comment under the cursor. It is
+// the same width whether or not it's drawn, so nothing shifts as the cursor
+// moves.
+func commentGutter(atCursor bool) string {
+	if atCursor {
+		return yellow500.Render("▌ ")
+	}
+	return strings.Repeat(" ", commentGutterCols)
+}
+
+// Reply threading
+//
+// Replies are drawn as a tree: a tee for one with siblings below it, an elbow
+// for the last of a group, and a trailing rule under everything but the last.
+// All three are replyBranchCols wide, so switching between them never reflows
+// the text or moves a GIF.
+
+// replyUserIndent is the branch drawn beside a reply's author line.
+func replyUserIndent(isLast bool) string {
+	if isLast {
+		return gray700.Render("╰─") + " "
+	}
+	return gray700.Render("├─") + " "
+}
+
+// replyTextIndent is what continues under a reply's author line: a rule while
+// more replies follow, blank once the group has ended.
+func replyTextIndent(isLast bool) string {
+	if isLast {
+		return strings.Repeat(" ", replyBranchCols)
+	}
+	return gray700.Render("│") + strings.Repeat(" ", replyBranchCols-1)
+}
+
+// isLastReply reports whether comment i is the final reply of its parent.
+// Replies are spliced in contiguously right after the comment they answer, so
+// the group ends as soon as the next comment has a different parent.
+func (cp *CommentsPanel) isLastReply(i int) bool {
+	parent := cp.comments[i].ParentCommentID
+	if parent == "" {
+		return false
+	}
+	next := i + 1
+	return next >= len(cp.comments) || cp.comments[next].ParentCommentID != parent
 }
 
 // replyHintText renders the "↳ N replies" hint label for a parent comment.
@@ -295,17 +436,42 @@ func replyHintText(n int) string {
 //
 // Renders TUI text for the comments section. Reserves space for gifs, which are handled separately
 func (cp *CommentsPanel) View(width, height int, padding string) string {
-	if !cp.isOpen || len(cp.comments) == 0 {
+	if !cp.isOpen {
 		return ""
+	}
+
+	if len(cp.comments) == 0 {
+		var b strings.Builder
+		b.WriteString(padding + purple400.Bold(true).Render("Comments") + "\n")
+		if cp.loading {
+			// A small skeleton keeps the card visually stable and communicates
+			// progress without a noisy spinner.
+			barWidth := max(min(width-8, 18), 4)
+			for i := 0; i < min(max(height-2, 1), 4); i++ {
+				w := max(barWidth-i*3, 4)
+				b.WriteString(padding + gray800.Render(strings.Repeat("━", w)) + "\n")
+			}
+		} else {
+			b.WriteString(padding + gray500.Render("No comments yet") + "\n")
+		}
+		return b.String()
 	}
 
 	cp.width = width
 	cp.height = height
+	cp.hearts = cp.hearts[:0]
 
 	var b strings.Builder
 
-	// Header
-	header := purple400.Bold(true).Underline(true).Render("Comments")
+	// Header shows both position and total. The fixed-width card no longer
+	// feels like an unlabelled slice of a longer list.
+	header := purple400.Bold(true).Render("Comments")
+	position := min(cp.cursor+1, len(cp.comments))
+	header += gray600.Render(fmt.Sprintf("  %d/%d", position, len(cp.comments)))
+	header += gray800.Render("  ↑↓")
+	if cp.loading {
+		header += yellow500.Render("  …")
+	}
 	b.WriteString(padding + header + "\n")
 	availableLines := height - 2
 	if availableLines < 1 {
@@ -316,17 +482,79 @@ func (cp *CommentsPanel) View(width, height int, padding string) string {
 	linesUsed := 0
 	for i := cp.scroll; i < len(cp.comments) && linesUsed < availableLines; i++ {
 		comment := cp.comments[i]
-		userIndent, textIndent, wrapWidth := cp.replyIndent(comment.ParentCommentID != "")
+		isReply := comment.ParentCommentID != ""
+		layout := commentLayoutFor(width, isReply)
+		gutter := commentGutter(i == cp.cursor)
 
-		// Username with verified badge; underline the author under the cursor
+		userIndent := gutter + strings.Repeat(" ", layout.userCols)
+		textIndent := gutter + strings.Repeat(" ", layout.textCols)
+		if isReply {
+			last := cp.isLastReply(i)
+			userIndent = gutter + replyUserIndent(last)
+			textIndent = gutter + replyTextIndent(last)
+		}
+		wrapWidth := layout.wrapWidth
+
+		// The heart is drawn on every comment, liked or not, so there is always
+		// something to click. Build it first so the username and metadata can
+		// yield space to it instead of expanding the fixed side card.
+		heartLabel := "♥"
+		if comment.CommentLikeCount > 0 {
+			heartLabel += " " + formatLikeCount(comment.CommentLikeCount)
+		}
+		heartWidth := lipgloss.Width(heartLabel)
+
+		lineWidth := max(width-commentGutterCols-layout.userCols, 1)
+		separator := "  "
+		usernameBudget := max(lineWidth-heartWidth-lipgloss.Width(separator), 1)
+
+		badge := ""
+		if comment.IsVerified {
+			badge = " ✓"
+		}
+		age := ""
+		if renderedAge := relativeTime(comment.CreatedAt); renderedAge != "" {
+			age = "  " + renderedAge
+		}
+
+		// Age is useful but least important; the verified badge and identity
+		// survive first when a narrow panel cannot fit everything.
+		suffix := badge + age
+		if lipgloss.Width(suffix) >= usernameBudget {
+			age = ""
+			suffix = badge
+		}
+		if lipgloss.Width(suffix) >= usernameBudget {
+			badge = ""
+			suffix = ""
+		}
+		nameBudget := max(usernameBudget-lipgloss.Width(suffix), 1)
+		username := truncateByWidth("@"+comment.Username, nameBudget)
+
 		usernameStyle := pink200.Bold(true)
 		if i == cp.cursor {
 			usernameStyle = yellow500.Bold(true).Underline(true)
 		}
-		userPart := usernameStyle.Render("@" + comment.Username)
-		if comment.IsVerified {
+		userPart := usernameStyle.Render(username)
+		if badge != "" {
 			userPart += " " + blue500.Render("✓")
 		}
+		if age != "" {
+			userPart += gray600.Render(age)
+		}
+		userPart += separator
+		heartStart := commentGutterCols + layout.userCols + lipgloss.Width(userPart)
+		if comment.HasLikedComment {
+			userPart += red500.Render(heartLabel)
+		} else {
+			userPart += gray600.Render(heartLabel)
+		}
+		cp.hearts = append(cp.hearts, commentHeartHit{
+			index: i,
+			row:   linesUsed,
+			start: heartStart,
+			width: lipgloss.Width(heartLabel),
+		})
 
 		// For GIF comments, require room for username + full cp.gifCellHeight
 		if _, ok := cp.gifAnims[comment.PK]; ok {
@@ -341,10 +569,14 @@ func (cp *CommentsPanel) View(width, height int, padding string) string {
 		b.WriteString(padding + userIndent + userPart + "\n")
 		linesUsed++
 
-		// GIF comment: reserve blank lines for the animation
+		// GIF comment: reserve rows for the animation while continuing the
+		// reply branch beside it. Completely blank rows used to cut a thread's
+		// vertical rule in half whenever one of its replies was a GIF.
 		if _, ok := cp.gifAnims[comment.PK]; ok {
-			b.WriteString(strings.Repeat("\n", cp.gifCellHeight))
-			linesUsed += cp.gifCellHeight
+			for range cp.gifCellHeight {
+				b.WriteString(padding + textIndent + "\n")
+				linesUsed++
+			}
 		} else {
 			// Write comment text lines
 			commentLines := wrapByWidth(strings.ReplaceAll(comment.Text, "\n", " "), wrapWidth)
@@ -359,7 +591,11 @@ func (cp *CommentsPanel) View(width, height int, padding string) string {
 
 		// Reply hint under a top-level comment whose replies aren't loaded yet
 		if cp.showsReplyHint(i) && linesUsed < availableLines {
-			b.WriteString(padding + "    " + gray400.Render(replyHintText(comment.ChildCommentCount)) + "\n")
+			hint := blue400.Render(replyHintText(comment.ChildCommentCount))
+			if i == cp.cursor {
+				hint += gray600.Render("  space to open")
+			}
+			b.WriteString(padding + textIndent + "  " + hint + "\n")
 			linesUsed++
 		}
 	}
@@ -387,13 +623,11 @@ func (cp *CommentsPanel) VisibleGifSlots(width, height, baseRow, baseCol int) []
 	for i := cp.scroll; i < len(cp.comments) && linesUsed < availableLines; i++ {
 		comment := cp.comments[i]
 
-		// Replies are indented, matching View's layout.
-		wrapWidth := width - 2
-		gifCol := baseCol + 2
-		if comment.ParentCommentID != "" {
-			wrapWidth = wrapWidth - 2
-			gifCol = gifCol + 2
-		}
+		// Same layout View used, so the blank rows it reserved line up with
+		// where the GIF actually lands.
+		layout := commentLayoutFor(width, comment.ParentCommentID != "")
+		wrapWidth := layout.wrapWidth
+		gifCol := baseCol + layout.gifCol
 
 		// For GIF comments, require room for username + full cp.gifCellHeight
 		if _, ok := cp.gifAnims[comment.PK]; ok {

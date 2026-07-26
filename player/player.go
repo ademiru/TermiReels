@@ -295,6 +295,7 @@ func (p *AVPlayer) SetRetinaScale(scale int) {
 
 // SetVolume sets the volume (0.0–1.0)
 func (p *AVPlayer) SetVolume(vol float64) {
+	vol = min(max(vol, 0), 1)
 	p.volume.Store(vol)
 	p.withSession(func(s *playSession) {
 		if s.audio != nil {
@@ -342,22 +343,45 @@ func (p *AVPlayer) IsPaused() bool {
 }
 
 // Skip seeks playback by the given number of seconds (positive = forward, negative = backward).
-func (p *AVPlayer) Skip(seconds float64) {
+// Returns where the seek landed and the clip duration so callers can show the
+// new position; ok is false when nothing is playing or the duration is unknown.
+func (p *AVPlayer) Skip(seconds float64) (pos, dur float64, ok bool) {
 	p.withSession(func(s *playSession) {
 		current := float64(0)
 		if s.audio != nil {
 			current = s.audio.Time()
 		}
 		target := current + seconds
-		if dur := s.demuxer.Duration(); dur > 0 {
+		dur = s.demuxer.Duration()
+		if dur > 0 {
 			target = math.Mod(target, dur) // loop back around
 			if target < 0 {
 				target += dur
 			}
+			ok = true
 		}
 
 		s.Seek(target)
+		pos = target
 	})
+	return pos, dur, ok
+}
+
+// SeekToFraction seeks to a fraction of the clip, 0 being the start and 1 the
+// end. Returns where it landed and the duration; ok is false when nothing is
+// playing or the duration is unknown.
+func (p *AVPlayer) SeekToFraction(fraction float64) (pos, dur float64, ok bool) {
+	fraction = min(max(fraction, 0), 1)
+	p.withSession(func(s *playSession) {
+		dur = s.demuxer.Duration()
+		if dur <= 0 {
+			return
+		}
+		pos = fraction * dur
+		s.Seek(pos)
+		ok = true
+	})
+	return pos, dur, ok
 }
 
 // RedrawVideo signals the render loop to advance one frame while paused,

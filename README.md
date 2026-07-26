@@ -1,195 +1,137 @@
-<p align="center">
-  <a href="https://www.npmjs.com/package/@reels/tui"><img src="https://img.shields.io/endpoint?url=https://proud-sun-d44c.nickjyeung.workers.dev&logo=npm" alt="npm"></a>
-  <a href="https://aur.archlinux.org/packages/reels-bin"><img src="https://img.shields.io/aur/version/reels-bin" alt="AUR"></a>
-  <a href="https://github.com/njyeung/homebrew-tap"><img src="https://img.shields.io/badge/brew-njyeung/tap-orange?logo=homebrew" alt="Homebrew"></a>
-  <a href="https://github.com/njyeung/reels/releases/latest"><img src="https://img.shields.io/github/v/release/njyeung/reels" alt="Latest Release"></a>
-</p>
-<p align="center">
-  <a href="https://github.com/njyeung/reels"><img src="https://img.shields.io/github/stars/njyeung/reels" alt="Stars"></a>
-  <img src="https://img.shields.io/github/last-commit/njyeung/reels" alt="Last Commit">
-  <img src="https://img.shields.io/badge/macOS-supported-blue?logo=apple" alt="macOS">
-  <img src="https://img.shields.io/badge/Linux-supported-blue?logo=linux" alt="Linux">
-  <img src="https://img.shields.io/github/license/njyeung/reels" alt="License">
-</p>
+# TermiReels
 
-<p align="center">
-  <img src="assets/banner.svg" alt="REELS TUI" width="100%">
-</p>
-<p align="center">
-  <img src="assets/demo_popos.gif" width="35%" />
-  <img src="assets/demo_macos.gif" width="35%">
-  <img src="assets/demo_arch.gif" width="26%" />
-</p>
-<p align="center">
-  <img src="assets/subtitle.svg" alt="Doomscrollbrainrotmaxxing in the terminal" width="500">
-</p>
+TermiReels is an unofficial Instagram Reels client for terminals that support
+the Kitty graphics protocol. It drives a local Chromium session, downloads the
+current video to a cache, and renders frames in the terminal.
 
----
+This project is a modified version of
+[njyeung/reels](https://github.com/njyeung/reels). The original project and
+this derivative are distributed under the MIT License. TermiReels is not
+affiliated with or endorsed by Instagram or Meta.
 
-## Prerequisites
+## Current status
 
-### Terminal
-You need a terminal that supports the **Kitty graphics protocol**:
-- [Kitty](https://sw.kovidgoyal.net/kitty/) (recommended)
-- [Ghostty](https://ghostty.org/) (recommended)
-- [WezTerm](https://wezfurlong.org/wezterm/) (recommended)
-- [iTerm2](https://iterm2.com/) (recommended)
-- [st](https://st.suckless.org/) (recommended)
-- [Konsole](https://konsole.kde.org/)
-- [Warp](https://www.warp.dev/)
-- [wayst](https://github.com/91861/wayst)
+The application is usable on Linux and macOS, but Instagram can change its
+page structure and private GraphQL endpoints without notice. Features that
+depend on those endpoints may require maintenance after an Instagram update.
 
-### Chrome (LINUX ARM64 ONLY)
-Chrome is automatically downloaded on first run if no system Chrome/Chromium is found; No action is needed for most platforms. The exception is Linux ARM64, where Chrome For Testing isn't available yet ([coming Q2 2026!](https://blog.chromium.org/2026/03/bringing-chrome-to-arm64-linux-devices.html)). If you are on Linux ARM64, you'll need to install Chrome, Chromium, or Brave manually before running Reels.
+Public releases are source-only for now. The repository's existing static
+FFmpeg build is used for CI verification, not distributed as a release binary.
 
-## Usage
+## Requirements
+
+- Go 1.25 or newer
+- FFmpeg 8 development libraries
+- Chromium, Chrome, or Brave
+- A terminal with Kitty graphics support
+
+Tested terminal families include Kitty, Ghostty, WezTerm, iTerm2, Konsole and
+st. Terminal multiplexers may not forward the required graphics escapes.
+
+On Linux, install the FFmpeg development package supplied by your
+distribution. On macOS, use `ffmpeg-full` from Homebrew or an equivalent
+FFmpeg 8 build.
+
+## Build
 
 ```bash
-reels
+git clone https://github.com/ademiru/TermiReels.git
+cd TermiReels
+go build -o termireels .
+./termireels
 ```
 
-### Flags
-- `--headed` - Run browser in headed mode (visible browser window)
-- `--login` - Open browser window to log in to Instagram
+The repository URL will be filled in when the new upstream repository is
+created.
 
-### Controls
+## Login
 
-| reels.conf bind | Default | Action |
-|-----------------|---------|--------|
-| `key_next` | `j` | Next reel (scrolls panels when open) |
-| `key_previous` | `k` | Previous reel (scrolls panels when open) |
-| `key_seek_backward` | `h` | Seek backward by 5 seconds |
-| `key_seek_forward` | `l` | Seek forward by 5 seconds |
-| `key_like` | `space` | Like/unlike |
-| `key_repost` | `r` | Repost/unrepost current reel |
-| `key_select` | `space` | Select friend in share/friends panel. Overrides any other bind while either panel is open |
-| `key_pause` | `p` | Pause/resume current reel |
-| `key_save` | `b` | Save/Unsave (bookmark) current reel |
-| `key_navbar` | `e` | Toggle navbar, a condensed version of the help menu |
-| `key_comments_open` | `c` | Open comments |
-| `key_comments_close` | `C` | Close comments |
-| `key_share_open` | `s` | Open share panel. Allows you to share reels with instagram's suggested top friends. |
-| `key_share_close` | `S` | Close Share panel & sends to friends' DMs (if any are selected) |
-| `key_friends_open` | `d` | Open DM friends panel to view reels shared by friends |
-| `key_friends_close` | `D` | Close DM friends panel / exit friend mode |
-| `key_react_open` | `x` | Open react panel to react to a friend's reel (friend mode only) |
-| `key_react_close` | `X` | Close react panel (friend mode only) |
-| `key_copy_link` | `y` | Copy reel link to clipboard |
-| `key_mute` | `m` | Mute current reel |
-| `key_vol_up` | `]` | Volume up |
-| `key_vol_down` | `[` | Volume down |
-| `key_reel_size_inc` | `=` | Enlarge video |
-| `key_reel_size_dec` | `-` | Shrink video |
-| `key_help_open` | `?` | Help panel shows the current keybinds |
-| `key_help_close`| `?` | Close help panel |
-| `key_quit` | `q` | Quit |
-| `key_quit` | `ctrl+c` | Quit |
-
-All keybinds are configurable in `reels.conf`. Each action supports multiple binds. Open/close pairs (like `key_comments_open` and `key_comments_close`) can be bound to the same key to toggle.
-
-## Installation
-
-### npm (macOS ARM64 / Linux x86_64 & ARM64)
+On first use:
 
 ```bash
-npm install -g @reels/tui
-reels
+./termireels --login
 ```
 
-### Homebrew (macOS ARM64 / Linux x86_64 & ARM64)
+Complete the login in the Chromium window. Later runs reuse the same browser
+profile.
+
+Useful flags:
+
+```text
+--headed               keep the controlled browser visible
+--login                open the browser for login
+--shortcut             edit keyboard shortcuts and exit
+--skip-terminal-check  bypass the Kitty graphics capability probe
+--version              print the build version
+```
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| `j` / `k` | next / previous reel |
+| `h` / `l` | seek backward / forward |
+| `space` | like |
+| `r` | repost |
+| `b` | save |
+| `c` / `C` | open / close comments |
+| `s` / `S` | open share panel / send and close |
+| `d` / `D` | open / close reels shared in DMs |
+| `x` / `X` | open / close reactions in DM mode |
+| `p` | pause |
+| `m` | mute |
+| `[` / `]` | volume down / up |
+| `e` | toggle the footer labels |
+| `?` | help |
+| `q` or `ctrl+c` | quit |
+
+The footer, volume bar, reel progress bar, comment hearts and share panel also
+support mouse input. All keyboard bindings can be changed with:
 
 ```bash
-brew tap njyeung/tap
-brew install reels
-reels
+./termireels --shortcut
 ```
 
-### AUR (Arch Linux x86_64 & ARM64)
+## Data files
 
-```bash
-yay -S reels-bin
-reels
+TermiReels currently keeps compatibility with the original application's
+paths:
+
+```text
+~/.config/reels/reels.conf
+~/.cache/reels/
+~/.local/share/reels/chrome-data/
+~/.local/state/reels/
 ```
 
-### Pre-built Binaries
+The configuration file is reloaded while the application is running.
 
-Download the latest release from [GitHub Releases](https://github.com/njyeung/reels/releases):
+## What this fork changes
 
-| Platform | Binary |
-|----------|--------|
-| Linux (x86_64) | `reels-linux-amd64` |
-| Linux (ARM64) | `reels-linux-arm64` |
-| macOS (Apple Silicon) | `reels-darwin-arm64` |
+- responsive reel sizing and a compact layout for small terminals
+- fixed side panel for comments on wide terminals
+- mouse controls for actions, seeking, volume and panels
+- comment and reply likes, including GIF reply layout fixes
+- lazy feed continuation instead of stopping at the captured cache boundary
+- configurable shortcuts and live configuration reload
+- stable scrolling captions and coloured music metadata
+- audio prebuffering and underrun recovery
 
-### Building from Source (For Developers)
+The detailed history is in [CHANGELOG.md](CHANGELOG.md).
 
-Requires Go 1.25+ and FFmpeg 8+ development libraries.
+## Limitations
 
-Pre-built binaries ship with FFmpeg statically linked. For development, dynamically linking against a system FFmpeg makes building and iteration faster (simply `go build -o reels`). You can still build using docker, but I highly recommend installing the correct versions of FFmpeg following the directions below:
+- Instagram login and a local Chromium profile are required.
+- Instagram frontend changes can break feed, comment or sharing operations.
+- The black-box test requires a real account and is not run as part of a
+  normal unit-test pass.
+- Linux ARM64 requires an installed Chromium-family browser.
 
-**macOS:** Requires `ffmpeg-full` from [Homebrew](https://brew.sh) (`brew install ffmpeg-full`), [MacPorts](https://ports.macports.org/port/ffmpeg/), or FFmpeg 8+ built from [source](https://github.com/ffmpeg/ffmpeg). The standard `brew install ffmpeg` is missing required framework link flags.
+## License and attribution
 
-**Linux:** Requires FFmpeg 8+ development libraries from your package manager (e.g. `sudo pacman -S ffmpeg` on Arch, `sudo apt install ffmpeg` on Debian/Ubuntu). This usually works fine as long as your packages are updated.
+The application source is available under the [MIT License](LICENSE). The
+original copyright notice is retained as required by that license.
 
-```bash
-# brew install ffmpeg-full      on macOS
-# sudo apt install ffmpeg       on Linux
-# ffmpeg -version               should be 8+
-git clone https://github.com/njyeung/reels.git
-cd reels
-go build -o reels .
-```
-
-## File Paths
-
-- Settings: `~/.config/reels/reels.conf`
-- Cache: `~/.cache/reels/`
-- Chrome Data: `~/.local/shared/reels/`
-- Logs: `~/.local/state/reels/reels.log`
-
-`Debugging tip: If Reels TUI persistently fails with an error, try rm -rf ~/.local/shared/reels/`
-
-## Default settings
-
-```
-# Default config (created on first run)
-
-show_navbar = true
-retina_scale = 2    # auto detects 2 on macOS, 1 on Linux by default
-reel_width = 270
-reel_height = 480
-reel_size_step = 30
-volume = 1
-gif_cell_height = 5
-panel_shrink_steps = 4  # how many reel_size_steps to shrink when opening a panel
-
-# Configurable keybinds (multiple binds per action supported)
-key_next = j
-key_previous = k
-key_pause = p
-key_mute = m
-key_like = space
-key_repost = r
-key_navbar = e
-key_vol_up = ]
-key_vol_down = [
-key_reel_size_inc = =
-key_reel_size_dec = -
-key_copy_link = y
-key_save = b
-key_seek_forward = l
-key_seek_backward = h
-key_share_open = s
-key_share_close = S
-key_select = space
-key_friends_open = d
-key_friends_close = D
-key_react_open = x
-key_react_close = X
-key_comments_open = c
-key_comments_close = C
-key_help_open = ?
-key_help_close = ?
-key_quit = q
-key_quit = ctrl+c
-```
+Embedded Twemoji graphics use a separate CC BY 4.0 license. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing the
+source or building release packages.

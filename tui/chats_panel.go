@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/njyeung/reels/backend"
+	"github.com/ademiru/TermiReels/backend"
 )
 
 // ChatsPanel picks a DM chat whose shared reels to browse.

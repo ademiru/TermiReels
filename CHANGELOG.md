@@ -1,5 +1,68 @@
 # Changelog
 
+## [Unreleased]
+
+- Unify footer button states and add stable scrolling caption/music tickers
+- Render music metadata with a colourful brand-gradient treatment
+- Smooth playback with audio prebuffering, automatic underrun recovery, and deeper packet queues
+- UI: use one background-free active-state language across footer controls so coloured icons remain clear
+- UI: add a compact cinema layout below 32 terminal rows, reserving only six chrome rows so the reel stays large in small windows
+- UI: compact cinema keeps creator, direct volume and icon controls while hiding secondary metadata and footer labels; the full premium layout returns automatically when resized
+- Fix: sanitize music metadata for terminal display, removing invalid UTF-8, invisible format/private-use glyphs and decorative symbol runs that rendered as replacement diamonds
+- Fix: retry PK-based comment likes with the complete Instagram web header set, then use a guarded visible-button fallback
+- Fix: child replies use the same independent comment-like path and retain their own optimistic/rollback state
+- UI: add a precise mouse-draggable volume slider with percentage readout above the footer
+- UI: add small aligned labels beneath every footer action, with the label row sharing the same click targets
+- UI: group footer actions into engagement, library, and playback sections, with an automatic compact mode on narrow terminals
+- UI: replace empty comment loading text with a stable skeleton and add navigation cues to the fixed header
+- UI: render transient HUD messages as compact dark badges above the reel
+- Fix: actively paint every terminal row so a footer from the previous frame cannot survive as a duplicate
+- UI: top-anchor the reel and stop double-reserving vertical chrome, using the recovered rows to enlarge video
+- UI: compact HUD messages into the small band above the enlarged reel
+- UI: rebuild reel metadata as distinct creator, music, prose, and hashtag layers with controlled wrapping and a quiet one-line navigation hint
+- Fix: reserve a terminal safety row below the footer and render a full-height frame, preventing emoji-width wrapping from leaving a duplicate action bar
+- UI: long comment authors and metadata yield to the heart control instead of widening the fixed side card
+- UI: comments show the current cursor position, and unavailable comment/share controls are visibly disabled
+- UI: footer counters reserve stable space so controls do not shift between reels
+- UI: action controls now live in a stable footer instead of above the reel
+- UI: comments open beside the reel on wide terminals, with the below-reel layout retained as a responsive fallback
+- Performance: initialize the system audio device only when an audio stream is actually opened
+- Fix: comment likes now target the comment's stable Instagram PK instead of guessing from author and text
+- Fix: GIF replies keep their thread branch visible through the animation rows
+- Fix: reaching the captured reel boundary loads the next lazy feed page instead of behaving like the feed ended
+- Replies are drawn as a thread: a tee for a reply with siblings below it, an elbow for the last of a group, and a rule carried down its wrapped lines
+- Sending a reel over DM confirms itself above the reel with the number of friends it went to, instead of only ticking the share icon for a second
+- Reposting announces itself above the reel as well as turning the icon
+- The share panel's send button is a full-width SEND swept with the brand gradient
+- Fix: one wheel notch moved several rows. Ghostty on Wayland forwards high-resolution scrolling, so a notch arrives as a burst of events; they are collapsed to one step
+- `reels --shortcut` opens a shortcut editor: pick an action, press a key, done. Changes save immediately and a running reels picks them up without a restart
+- The repost icon turns for a moment when you repost, and no longer shows a count — you have either reposted a reel or you haven't, so it only ever read 0 or 1
+- Mouse support: scroll to move between reels or scroll the open panel, click the status icons, click the reel to pause
+- Status controls highlight under the pointer, so the row reads as clickable
+- Click a friend in the share panel to pick them, and a [ Send ] button in its header to send — sharing a reel no longer needs the keyboard at all
+- Share panel: an explicit checkbox per friend instead of colour alone, a cursor bar, a running selected count, and the keys in the header
+- Drag the reel's progress bar to scrub; the drag continues after the pointer leaves the bar, and the timecode is flashed as you go
+- Like a comment by clicking its heart. Comment liking had no backend at all before — HasLikedComment was read from Instagram and never written
+- Comments panel: age, like count and a heart on every comment; a cursor bar; replies marked with a vertical rule; an empty state instead of a blank panel
+- Share panel: long friend names are clipped to the panel instead of wrapping and breaking the fixed rows-per-friend the avatars depend on
+- Fix: in fit mode the view was one line taller than the terminal, so the terminal scrolled and every row shifted up. Mouse targets, which derive their rows from the reel position, then sat one row below what was drawn
+- Colour pass: each status control has its own hue and lights up when active, hashtags are picked out in captions, navbar keys are picked out from their labels
+- Long captions and music metadata scroll horizontally instead of being cut off with an ellipsis
+- Fix: the caption started flush left, underneath the creator's avatar. Everything below the reel now shares one left edge clear of it
+- Fix: status icons with ambiguous East Asian width (⇄ ↗ ⚐ ▶) could be drawn one or two columns wide depending on the terminal, putting every click target after them in the wrong place. All icons are now a fixed two columns
+- The status row's click target includes the blank row beneath it, so the controls aren't a one-row sliver
+- Fix: the music marquee stepped by rune instead of display column, so titles with emoji or CJK scrolled unevenly
+- `reel_fit` (on by default) scales the reel to the terminal on every resize, at native device resolution
+- Edits to `reels.conf` apply while running, no restart needed
+- Log in from the login screen with `enter` instead of restarting with `--login`
+- Probe the terminal for Kitty graphics support at startup and explain the problem instead of emitting garbage (`--skip-terminal-check` to bypass)
+- Error screen now offers a retry and points at the log and browser profile
+- Seeking flashes the new position
+- Fix: `panel_shrink_steps` was written to the config as `panel_shrink`, so the setting never took effect
+- Fix: rewriting the config no longer discards user comments and unrecognised keys
+- Fix: config writes are atomic and serialized; rapid volume changes could previously interleave
+- Fix: opening a panel no longer persists the shrunken reel size
+
 ## [1.4.1]
 - Enable viewing comment replies (expand a comment to read its replies)
 - Fix: consistent reel border and progress bar on macOS

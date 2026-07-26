@@ -5,24 +5,25 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ademiru/TermiReels/backend"
+	"github.com/ademiru/TermiReels/player"
+	"github.com/ademiru/TermiReels/player/shm"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/njyeung/reels/backend"
-	"github.com/njyeung/reels/player"
-	"github.com/njyeung/reels/player/shm"
 )
 
 // Messages
 type (
-	backendReadyMsg  struct{}
-	backendErrorMsg  struct{ err error }
-	loginRequiredMsg struct{}
-	loginSuccessMsg  struct{}
-	reelLoadedMsg    struct{ info *backend.ReelInfo }
-	reelErrorMsg     struct{ err error }
-	backendEventMsg  backend.Event
-	videoErrorMsg    struct{ err error }
-	videoReadyMsg    struct {
+	backendReadyMsg   struct{}
+	backendErrorMsg   struct{ err error }
+	loginRequiredMsg  struct{}
+	loginSuccessMsg   struct{}
+	reelLoadedMsg     struct{ info *backend.ReelInfo }
+	reelErrorMsg      struct{ err error }
+	feedMoreFailedMsg struct{}
+	backendEventMsg   backend.Event
+	videoErrorMsg     struct{ err error }
+	videoReadyMsg     struct {
 		index           int
 		pfp             *player.Img
 		contextFloating []floatingItem // reel-context pfps from the download (repost/like/sent)
@@ -39,6 +40,16 @@ type (
 	loadingMsgTickMsg    struct{}
 	loadingScrollTickMsg struct{}
 	loadingFadeTickMsg   struct{}
+	configCheckMsg       struct{}
+	loginRestartedMsg    struct{ err error }
+	repostSpinMsg        struct{ gen int }
+
+	// commentLikeFailedMsg rolls back an optimistic comment like that the page
+	// refused, so the UI never claims something the site didn't do
+	commentLikeFailedMsg struct {
+		pk      string
+		restore bool
+	}
 )
 
 // floatingItem is a pfp that floats in the reel's bottom-right quadrant with a
@@ -116,12 +127,20 @@ type Model struct {
 	flags Config
 
 	loginSuccess bool
+	// loginRestarting is set while the browser is being relaunched in headed
+	// mode, so the login screen can say so and ignore repeat presses
+	loginRestarting bool
 
-	musicScrollOffset int
+	// marqueeOffset drives the horizontal scroll shared by the music line and
+	// an over-long caption, in display columns
+	marqueeOffset int
 
 	// share button switches to a different emoji for 1s when clicked
 	shareConfirmed bool
 	shareSending   bool
+	// shareCount is how many friends the in-flight share is going to, captured
+	// before the panel clears itself so the confirmation can name them
+	shareCount int
 
 	hud HUD
 
@@ -131,6 +150,28 @@ type Model struct {
 	// which get rebuilt whenever the user reacts.
 	reelFloating []floatingItem
 	floating     []floatingItem
+
+	// hoveredStatus is the status-line control the pointer is currently over,
+	// highlighted so the row reads as clickable
+	hoveredStatus statusAction
+
+	// scrubbing is set while the pointer drags the reel's progress bar
+	scrubbing bool
+	// volumeDragging keeps the footer volume slider active while the pointer
+	// moves, independently from video progress scrubbing.
+	volumeDragging bool
+
+	// lastWheelStep is when the last wheel notch was acted on, used to collapse
+	// the burst of events a high-resolution scroll produces
+	lastWheelStep time.Time
+
+	// repostSpin counts down the frames left in the repost icon's animation;
+	// repostGen discards ticks from a superseded animation
+	repostSpin int
+	repostGen  int
+
+	// configDir is watched so edits to reels.conf apply without a restart
+	configDir string
 
 	version         string
 	updateAvailable string
@@ -184,6 +225,7 @@ func NewModel(userDataDir, logDir, cacheDir, configDir string, output io.Writer,
 		react:         NewReactPanel(),
 		flags:         flags,
 		showNavbar:    settings.ShowNavbar,
+		configDir:     configDir,
 		version:       version,
 	}
 }
@@ -195,7 +237,27 @@ func (m Model) Init() tea.Cmd {
 		m.startBackend,
 		m.checkVersion,
 		m.fetchLoadingMessages,
+		m.watchConfig(),
 	)
+}
+
+// watchConfig schedules the next poll of reels.conf for external edits.
+func (m Model) watchConfig() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return configCheckMsg{}
+	})
+}
+
+// applySettings installs settings that were changed outside the app (by an
+// edit to reels.conf) onto the running player and layout. Keybinds need no
+// work here: every handler reads them from GetSettings on each press.
+func (m *Model) applySettings(s backend.Settings) {
+	m.showNavbar = s.ShowNavbar
+	m.player.SetVolume(s.Volume)
+	m.player.SetRetinaScale(s.RetinaScale)
+
+	m.relayout()
+	m.player.RedrawVideo()
 }
 
 func (m Model) startBackend() tea.Msg {
@@ -240,6 +302,16 @@ func (m Model) loadCurrentReel() tea.Msg {
 	return reelLoadedMsg{info}
 }
 
+// restartHeaded closes the headless browser and reopens it visibly, so the
+// user can log in without quitting and re-running with --login.
+func (m Model) restartHeaded() tea.Msg {
+	m.backend.Stop()
+	if err := m.backend.Start(false); err != nil {
+		return loginRestartedMsg{err: err}
+	}
+	return loginRestartedMsg{}
+}
+
 func (m Model) checkLoginStatus() tea.Msg {
 	// Poll every 2 seconds to check if user has logged in via the browser
 	time.Sleep(2 * time.Second)
@@ -260,10 +332,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		key := msg.String()
 		if slices.Contains(backend.GetSettings().KeysQuit, key) {
-			if m.panelOpen() {
-				m.resizeReel(backend.GetSettings().ReelSizeStep * backend.GetSettings().PanelShrinkSteps)
-			}
-
+			// The panel-open shrink is derived at render time and never
+			// persisted, so there is nothing to restore before quitting.
 			m.player.Close()
 			if m.backend != nil {
 				m.backend.Stop()
@@ -275,19 +345,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateBrowsing(msg)
 		}
 
-	case tea.MouseMsg: // intercept scrolling and do nothing
+		// The login screen used to end at "restart with --login". Enter
+		// relaunches the browser in place instead.
+		if m.state == stateLogin && !m.flags.LoginMode && !m.loginRestarting && key == "enter" {
+			m.loginRestarting = true
+			return m, m.restartHeaded
+		}
+
+		// A failed start is often transient (Instagram redirect, cold Chrome
+		// profile), so offer a retry rather than only a quit.
+		if m.state == stateError && key == "r" {
+			m.state = stateLoading
+			m.status = statusLoading
+			m.lastErr = nil
+			return m, m.startBackend
+		}
+
+	case tea.MouseMsg:
+		if m.state == stateBrowsing {
+			return m.updateMouse(msg)
+		}
 		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// recompute video character dimensions and re-center
-		player.ComputeVideoCharacterDimensions(m.videoWidthPx, m.videoHeightPx)
-		m.player.SetSize(m.videoWidthPx, m.videoHeightPx)
-		m.updateVideoPosition()
+		// Re-derive the reel size for the new terminal, then re-center.
+		// In fit mode this is what makes the reel grow with the window.
+		m.relayout()
 		if m.reelPFP != nil {
-			m.reelPFP.ResizeToCells(2)
+			m.reelPFP.ResizeToCells(reelPfpCells)
 		}
 		for _, item := range m.floating {
 			if item.pfp != nil {
@@ -311,6 +399,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case versionCheckMsg:
 		m.updateAvailable = msg.latest
 		return m, nil
+
+	case configCheckMsg:
+		if !backend.ConfigFileChanged(m.configDir) {
+			return m, m.watchConfig()
+		}
+		s, changed := backend.ReloadSettings(m.configDir)
+		if !changed {
+			return m, m.watchConfig()
+		}
+		m.applySettings(s)
+		if m.state != stateBrowsing {
+			return m, m.watchConfig()
+		}
+		return m, tea.Batch(m.hud.ShowToast("config reloaded"), m.watchConfig())
 
 	case loadingMsgsMsg:
 		if len(msg.messages) > 0 {
@@ -376,7 +478,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginSuccessMsg:
 		m.state = stateLogin
 		m.loginSuccess = true
+		m.loginRestarting = false
 		return m, nil
+
+	case repostSpinMsg:
+		if msg.gen != m.repostGen || m.repostSpin <= 0 {
+			return m, nil
+		}
+		m.repostSpin--
+		if m.repostSpin > 0 {
+			return m, m.repostSpinTick()
+		}
+		return m, nil
+
+	case commentLikeFailedMsg:
+		m.comments.SetCommentLikedByPK(msg.pk, msg.restore)
+		return m, m.hud.ShowToast("couldn't like that comment")
+
+	case loginRestartedMsg:
+		m.loginRestarting = false
+		if msg.err != nil {
+			m.lastErr = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		// The browser is now visible; poll until the user has logged in, the
+		// same way --login does.
+		m.flags.LoginMode = true
+		return m, m.checkLoginStatus
 
 	case backendErrorMsg:
 		m.lastErr = msg.err
@@ -417,17 +546,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reelLoadedMsg:
 		m.currentReel = msg.info
 		m.status = statusNone
-		m.musicScrollOffset = 0
+		m.marqueeOffset = 0
 		return m, m.startPlayback(msg.info.Index)
 
 	case musicTickMsg:
-		if m.currentReel != nil && m.currentReel.Music != nil {
-			m.musicScrollOffset++
+		// Advances for any reel, not just ones with music: a long caption
+		// scrolls off the same counter.
+		if m.currentReel != nil {
+			m.marqueeOffset++
 		}
 		return m, m.musicTick()
 
 	case volumeHoldMsg, volumeFadeTickMsg, dmNotifyHoldMsg, dmNotifyFadeTickMsg,
-		chatBannerHoldMsg, chatBannerFadeTickMsg:
+		chatBannerHoldMsg, chatBannerFadeTickMsg, toastHoldMsg, toastFadeTickMsg:
 		if handled, updated, cmd := m.updateHUD(msg); handled {
 			return updated, cmd
 		}
@@ -438,7 +569,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shareFailedMsg:
 		m.shareSending = false
-		return m, nil
+		return m, m.hud.ShowToast("couldn't send that")
 
 	case shareClosedMsg:
 		if m.share.IsOpen() {
@@ -455,11 +586,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.shareSending = false
 		m.shareConfirmed = true
-		return m, m.queueShareReset()
+		// A tick of the share icon is easy to miss, so say it outright.
+		return m, tea.Batch(m.queueShareReset(), m.hud.ShowToast(sentToast(m.shareCount)))
 
 	case reelErrorMsg:
 		m.status = statusReelError
 		return m, nil
+
+	case feedMoreFailedMsg:
+		// A lazy page can fail transiently without meaning the infinite feed
+		// is exhausted. Restore browsing so the next scroll retries discovery.
+		m.status = statusNone
+		return m, m.hud.ShowToast("loading more reels failed — scroll to retry")
 
 	case videoReadyMsg:
 		m.status = statusNone

@@ -84,6 +84,11 @@ type Backend interface {
 	// GetTotal returns total number of captured reels
 	GetTotal() int
 
+	// DiscoverNextReel advances the main feed past afterIndex and waits for
+	// Instagram to deliver the next reel. Infinite feeds load lazily, so the
+	// captured total is not an end-of-feed marker.
+	DiscoverNextReel(afterIndex int) (*ReelInfo, error)
+
 	// ToggleNavbar toggles navbar visibility and persists the state.
 	// Returns true if navbar should be shown, false if hidden.
 	ToggleNavbar() bool
@@ -93,6 +98,9 @@ type Backend interface {
 
 	// SetReelSize updates the reel bounding box dimensions and persists to disk.
 	SetReelSize(width, height int) error
+
+	// SetReelFit turns terminal-fitted reel sizing on or off and persists it
+	SetReelFit(fit bool) error
 
 	// SyncTo scrolls browser to match the given index
 	// This is async-friendly - call it in background after optimistic UI update
@@ -147,6 +155,11 @@ type Backend interface {
 
 	// CollapseChildComments removes the loaded replies of the given parent comment.
 	CollapseChildComments(parentPK string)
+
+	// SetCommentLiked sets one comment's like state. PK is the primary
+	// identity; author/text allow a guarded visible-DOM fallback when
+	// Instagram rejects its web endpoint.
+	SetCommentLiked(comment Comment, liked bool) error
 
 	// Download downloads a reel video, creator profile pic, and any floating-
 	// context item pfps (reposts/likes from friends) to the cache directory.

@@ -8,7 +8,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/njyeung/reels/player/shm"
+	"github.com/ademiru/TermiReels/player/shm"
 )
 
 // KittyRenderer renders images using Kitty's graphics protocol

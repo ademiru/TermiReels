@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
+	"github.com/ademiru/TermiReels/tui/colors"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/njyeung/reels/tui/colors"
 )
 
 func (m Model) viewLogin() string {
@@ -12,23 +12,41 @@ func (m Model) viewLogin() string {
 		return "Login required..."
 	}
 
+	badge := func(text string) string {
+		return lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colors.Yellow300Color).
+			Background(colors.Red700Color).
+			Padding(0, 1).
+			Render(text)
+	}
+
 	var title, instructions, statusLine string
 	help := gray600.Render("q: quit")
 
-	if m.flags.LoginMode {
-		// Headed mode: user is logging in via browser
-		if m.loginSuccess {
-			title = pink400.Bold(true).Render("Login successful!")
-			instructions = lipgloss.NewStyle().Bold(true).Foreground(colors.Yellow300Color).Background(colors.Red700Color).Padding(0, 1).Render("IMPORTANT") + "\nTell Instagram to " + lipgloss.NewStyle().Bold(true).Foreground(colors.Yellow300Color).Background(colors.Red700Color).Padding(0, 1).Render("save your login info") + " for next time\nThen restart the app without --login."
-		} else {
-			title = pink400.Bold(true).Render("Manual login")
-			instructions = "Please log in to Instagram in the browser window."
-			statusLine = m.spinner.View() + " Waiting for login..."
-		}
-	} else {
-		// Normal mode: tell user to restart with --login
+	switch {
+	case m.loginSuccess:
+		title = pink400.Bold(true).Render("Login successful!")
+		instructions = badge("IMPORTANT") + "\nTell Instagram to " + badge("save your login info") +
+			" for next time,\nthen restart the app."
+
+	case m.loginRestarting:
+		title = pink400.Bold(true).Render("Opening browser")
+		instructions = "Launching a browser window for Instagram..."
+		statusLine = m.spinner.View() + " Starting..."
+
+	case m.flags.LoginMode:
+		title = pink400.Bold(true).Render("Manual login")
+		instructions = "Please log in to Instagram in the browser window."
+		statusLine = m.spinner.View() + " Waiting for login..."
+
+	default:
+		// Normal mode with no session. Offer to relaunch the browser here
+		// rather than sending the user away to re-run with a flag.
 		title = pink400.Bold(true).Render("Login required")
-		instructions = "Please restart the app with --login to log in:\n\n    reels --login"
+		instructions = "reels needs an Instagram session to fetch reels.\n\n" +
+			"Press " + yellow300.Bold(true).Render("enter") + " to open a browser window and log in."
+		help = gray600.Render("enter: log in    q: quit")
 	}
 
 	content := []string{

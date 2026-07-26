@@ -1,8 +1,8 @@
 package tui
 
 import (
+	"github.com/ademiru/TermiReels/tui/colors"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/njyeung/reels/tui/colors"
 )
 
 var (

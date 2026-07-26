@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/njyeung/reels/backend"
+	"github.com/ademiru/TermiReels/backend"
 )
 
 type helpEntry struct {
@@ -68,6 +68,8 @@ func (hp *HelpPanel) buildEntries() {
 		{displayKeys(config.KeysReactClose), "close react panel (chat mode)"},
 		{displayKeys(config.KeysHelpOpen), "help"},
 		{displayKeys(config.KeysQuit), "quit"},
+		{"scroll", "next/prev reel, or scroll the open panel"},
+		{"click", "the icons above, or the reel to pause"},
 	}
 }
 
