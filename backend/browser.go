@@ -8,9 +8,11 @@ import (
 	"math/rand"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -257,6 +259,40 @@ func (b *ChromeBackend) GetTotal() int {
 	return b.activeCursor().Total()
 }
 
+// DiscoverNextReel moves the main feed beyond the last reel captured so far
+// and waits for the GraphQL response that contains the newly loaded reel.
+//
+// The number currently in FeedCursor is only a cache boundary, not the end of
+// Instagram's infinite feed. Treating it as a hard upper bound made navigation
+// appear to stop permanently after enough scrolling.
+func (b *ChromeBackend) DiscoverNextReel(afterIndex int) (*ReelInfo, error) {
+	if b.IsChatMode() {
+		return nil, fmt.Errorf("cannot extend the feed while browsing a chat")
+	}
+	if afterIndex < 1 {
+		return nil, fmt.Errorf("invalid feed index %d", afterIndex)
+	}
+
+	// A response may already have arrived between the key press and this
+	// command starting.
+	if info, err := b.GetReel(afterIndex + 1); err == nil {
+		return info, nil
+	}
+
+	if err := b.feed.scrollDown(); err != nil {
+		return nil, err
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := b.GetReel(afterIndex + 1); err == nil {
+			return info, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("timed out waiting for the next reel")
+}
+
 // SyncTo navigates the active cursor to the given index. Comments are cleared
 // up-front because arrow-key scrolls don't trigger Instagram's auto-close.
 func (b *ChromeBackend) SyncTo(index int) error {
@@ -336,6 +372,97 @@ func (b *ChromeBackend) ToggleLike() (bool, error) {
 
 	b.mutateReelByPK(pk, func(r *Reel) { r.Liked = !r.Liked })
 	return true, nil
+}
+
+// SetCommentLiked likes or unlikes one comment by its Instagram PK.
+//
+// Matching a visible DOM node by username and the first few words can click
+// the wrong comment when an author posts twice, and breaks whenever Instagram
+// rearranges its comment markup. The web endpoint accepts the stable PK that
+// the comments GraphQL response already gives us.
+func (b *ChromeBackend) SetCommentLiked(comment Comment, liked bool) error {
+	if b.IsSyncing() {
+		return fmt.Errorf("still syncing to reel")
+	}
+	if comment.PK == "" {
+		return fmt.Errorf("missing comment PK")
+	}
+
+	action := "unlike"
+	if liked {
+		action = "like"
+	}
+	pkJSON, _ := json.Marshal(comment.PK)
+	actionJSON, _ := json.Marshal(action)
+	usernameJSON, _ := json.Marshal(comment.Username)
+	textJSON, _ := json.Marshal(strings.Join(strings.Fields(comment.Text), " "))
+
+	js := fmt.Sprintf(`
+		(async () => {
+			const pk = %s;
+			const action = %s;
+			const username = %s;
+			const wantedText = %s;
+			const csrf = document.cookie.split('; ')
+				.find(c => c.startsWith('csrftoken='))
+				?.split('=').slice(1).join('=') || '';
+
+			const endpoint = '/api/v1/web/comments/' +
+				encodeURIComponent(pk) + '/' + action + '/';
+			let lastStatus = 0;
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					const response = await fetch(endpoint, {
+						method: 'POST',
+						credentials: 'include',
+						headers: {
+							'content-type': 'application/x-www-form-urlencoded',
+							'x-csrftoken': csrf,
+							'x-ig-app-id': '%s',
+							'x-asbd-id': '129477',
+							'x-requested-with': 'XMLHttpRequest'
+						},
+						body: ''
+					});
+					lastStatus = response.status;
+					if (response.ok) return 'api';
+				} catch (_) {
+					lastStatus = 0;
+				}
+				await new Promise(resolve => setTimeout(resolve, 250));
+			}
+
+			// Instagram occasionally rejects the web endpoint while its own
+			// visible button remains functional. Match the open comment by
+			// exact author + normalized text and only click the state needed
+			// for this operation. This works for loaded child replies too.
+			const normalize = s => (s || '').replace(/\s+/g, ' ').trim();
+			const aria = action === 'like' ? 'Like' : 'Unlike';
+			const links = document.querySelectorAll(
+				'a[href="/' + CSS.escape(username) + '/"],' +
+				'a[href^="/' + CSS.escape(username) + '/?"]'
+			);
+			for (const link of links) {
+				let node = link.parentElement;
+				for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+					if (!normalize(node.innerText).includes(wantedText)) continue;
+					const icon = node.querySelector('svg[aria-label="' + aria + '"]');
+					const button = icon?.closest('[role="button"]');
+					if (button) {
+						button.click();
+						return 'dom';
+					}
+				}
+			}
+			throw new Error('comment ' + action + ' failed: HTTP ' + lastStatus);
+		})()
+	`, pkJSON, actionJSON, usernameJSON, textJSON, expectedAppID)
+
+	var route string
+	return chromedp.Run(b.ctx, chromedp.Evaluate(js, &route,
+		func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+			return p.WithAwaitPromise(true)
+		}))
 }
 
 // ToggleRepost clicks the repost button for the current reel

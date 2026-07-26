@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ademiru/TermiReels/tui/colors"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -18,6 +19,8 @@ type (
 	dmNotifyFadeTickMsg   struct{}
 	chatBannerHoldMsg     struct{ gen int }
 	chatBannerFadeTickMsg struct{}
+	toastHoldMsg          struct{ gen int }
+	toastFadeTickMsg      struct{}
 )
 
 // hudItem identifies which overlay is currently displayed.
@@ -29,6 +32,9 @@ const (
 	hudChatBanner
 	hudVolume
 	hudDMNotify
+	// hudToast outranks the rest: it always acknowledges something the user
+	// just did, so it should never be suppressed by an older overlay.
+	hudToast
 )
 
 // HUD holds state for heads-up display overlays (volume indicator, notifications).
@@ -48,6 +54,21 @@ type HUD struct {
 	chatBannerGen      int
 	chatBannerTitle    string
 	chatBannerKeys     []string
+
+	// toast: 0=hidden, 1=visible (holding), 2-7=fading out
+	toastFadeStep int
+	toastGen      int
+	toastText     string
+}
+
+// ShowToast flashes a short message above the reel. Used for acknowledgements
+// that have no dedicated overlay: config reloads, seek positions, copied links.
+func (h *HUD) ShowToast(text string) tea.Cmd {
+	h.active = hudToast
+	h.toastFadeStep = 1
+	h.toastText = text
+	h.toastGen++
+	return h.toastHoldTick()
 }
 
 // ShowVolume triggers the volume indicator
@@ -101,25 +122,47 @@ func (h *HUD) HideChatBanner() {
 // viewHUD renders the heads-up display overlay area above the video.
 // topPad is the total number of lines available above the status line.
 func (m Model) viewHUD(videoWidthChars, topPad int, padding string) string {
-	if topPad < 3 || m.hud.active == hudNone {
+	if m.hud.active == hudNone {
 		return strings.Repeat("\n", max(topPad-1, 0))
+	}
+	if topPad < 3 {
+		text := ""
+		step := 1
+		switch m.hud.active {
+		case hudToast:
+			text, step = m.hud.toastText, m.hud.toastFadeStep
+		case hudDMNotify:
+			text, step = fmt.Sprintf("%d new reels from friends", m.hud.dmNotifyCount), m.hud.dmNotifyFadeStep
+		case hudVolume:
+			text, step = fmt.Sprintf("volume %d%%", int(m.player.Volume()*100+0.5)), m.hud.volumeFadeStep
+		case hudChatBanner:
+			text = fmt.Sprintf("From: %s · %s react", m.hud.chatBannerTitle, displayKeys(m.hud.chatBannerKeys))
+			step = m.hud.chatBannerFadeStep
+		}
+		style := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(hudFadeColor(step))).
+			Background(colors.Gray900Color).
+			Bold(true).
+			Padding(0, 1)
+		badge := style.Render(text)
+		left := max((videoWidthChars-1-lipgloss.Width(badge))/2, 0)
+		return padding + strings.Repeat(" ", left) + badge
 	}
 
 	var b strings.Builder
 	b.WriteString(strings.Repeat("\n", max(topPad-3, 0)))
 
 	switch m.hud.active {
+	case hudToast:
+		fadeColor := lipgloss.Color(hudFadeColor(m.hud.toastFadeStep))
+		style := lipgloss.NewStyle().Foreground(fadeColor)
+		b.WriteString(padding + centerInWidth(m.hud.toastText, videoWidthChars-1, style) + "\n\n")
+
 	case hudDMNotify:
 		fadeColor := lipgloss.Color(hudFadeColor(m.hud.dmNotifyFadeStep))
 		style := lipgloss.NewStyle().Foreground(fadeColor)
 		text := fmt.Sprintf("%d new reels from friends", m.hud.dmNotifyCount)
-		maxWidth := videoWidthChars - 1
-		if runewidth.StringWidth(text) > maxWidth {
-			text = truncateByWidth(text, maxWidth-3) + "..."
-		}
-		textWidth := runewidth.StringWidth(text)
-		leftPad := (maxWidth - textWidth) / 2
-		b.WriteString(padding + strings.Repeat(" ", leftPad) + style.Render(text) + "\n\n")
+		b.WriteString(padding + centerInWidth(text, videoWidthChars-1, style) + "\n\n")
 
 	case hudVolume:
 		vol := m.player.Volume()
@@ -136,16 +179,23 @@ func (m Model) viewHUD(videoWidthChars, topPad int, padding string) string {
 		style := lipgloss.NewStyle().Foreground(fadeColor)
 		reactKeys := displayKeys(m.hud.chatBannerKeys)
 		text := fmt.Sprintf("From: %s | press %s to react", m.hud.chatBannerTitle, reactKeys)
-		maxWidth := videoWidthChars - 1
-		if runewidth.StringWidth(text) > maxWidth {
-			text = truncateByWidth(text, maxWidth-3) + "..."
-		}
-		textWidth := runewidth.StringWidth(text)
-		leftPad := (maxWidth - textWidth) / 2
-		b.WriteString(padding + strings.Repeat(" ", leftPad) + style.Render(text) + "\n\n")
+		b.WriteString(padding + centerInWidth(text, videoWidthChars-1, style) + "\n\n")
 	}
 
 	return b.String()
+}
+
+// centerInWidth centers text in width columns, truncating with an ellipsis if
+// it doesn't fit. Only the text is styled, so the padding stays transparent.
+func centerInWidth(text string, width int, style lipgloss.Style) string {
+	if width < 1 {
+		return ""
+	}
+	if runewidth.StringWidth(text) > width {
+		text = truncateByWidth(text, max(width-3, 0)) + "..."
+	}
+	leftPad := max((width-runewidth.StringWidth(text))/2, 0)
+	return strings.Repeat(" ", leftPad) + style.Render(text)
 }
 
 // updateHUD processes HUD-related messages. Returns (handled, model, cmd).
@@ -196,6 +246,30 @@ func (m Model) updateHUD(msg tea.Msg) (bool, Model, tea.Cmd) {
 		}
 		return true, m, m.hud.dmNotifyFadeTick()
 
+	case toastHoldMsg:
+		if msg.gen != m.hud.toastGen {
+			return true, m, nil
+		}
+		if m.hud.toastFadeStep == 1 {
+			m.hud.toastFadeStep = 2
+			return true, m, m.hud.toastFadeTick()
+		}
+		return true, m, nil
+
+	case toastFadeTickMsg:
+		if m.hud.toastFadeStep < 2 {
+			return true, m, nil
+		}
+		m.hud.toastFadeStep++
+		if m.hud.toastFadeStep > 7 {
+			m.hud.toastFadeStep = 0
+			if m.hud.active == hudToast {
+				m.hud.active = hudNone
+			}
+			return true, m, nil
+		}
+		return true, m, m.hud.toastFadeTick()
+
 	case chatBannerHoldMsg:
 		if msg.gen != m.hud.chatBannerGen {
 			return true, m, nil
@@ -222,6 +296,19 @@ func (m Model) updateHUD(msg tea.Msg) (bool, Model, tea.Cmd) {
 	}
 
 	return false, m, nil
+}
+
+func (h HUD) toastHoldTick() tea.Cmd {
+	gen := h.toastGen
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return toastHoldMsg{gen: gen}
+	})
+}
+
+func (h HUD) toastFadeTick() tea.Cmd {
+	return tea.Tick(60*time.Millisecond, func(t time.Time) tea.Msg {
+		return toastFadeTickMsg{}
+	})
 }
 
 func (h HUD) volumeHoldTick() tea.Cmd {

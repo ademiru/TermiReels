@@ -54,6 +54,54 @@ func ComputeVideoCenterPosition(videoWidthPx, videoHeightPx int) (row, col int) 
 	return row, col
 }
 
+// FitVideoToTerminal returns the pixel size of the largest aspectW:aspectH
+// video that fits the terminal with reservedRows left over for the UI drawn
+// around it, plus a one-column margin on each side.
+//
+// The size comes out in real device pixels, because the cell size is derived
+// from the pixel dimensions the terminal reports. That makes the decode
+// resolution match the display exactly on HiDPI screens, which is what
+// retina_scale approximates when the reel size is fixed.
+//
+// ok is false when the terminal doesn't report pixel dimensions; callers
+// should fall back to the configured size.
+func FitVideoToTerminal(reservedRows, aspectW, aspectH int) (widthPx, heightPx int, ok bool) {
+	return FitVideoToTerminalArea(reservedRows, 2, aspectW, aspectH)
+}
+
+// FitVideoToTerminalArea is FitVideoToTerminal with an explicit horizontal
+// reservation. Side panels use it to leave terminal columns beside the reel
+// instead of shrinking the video only after it has already been centred.
+func FitVideoToTerminalArea(reservedRows, reservedCols, aspectW, aspectH int) (widthPx, heightPx int, ok bool) {
+	cols, rows, termW, termH, err := GetTerminalSize()
+	if err != nil || cols == 0 || rows == 0 || termW == 0 || termH == 0 {
+		return 0, 0, false
+	}
+
+	cellW := termW / cols
+	cellH := termH / rows
+	if cellW == 0 || cellH == 0 {
+		return 0, 0, false
+	}
+
+	availRows := max(rows-reservedRows, 1)
+	availCols := max(cols-reservedCols, 1)
+
+	heightPx = availRows * cellH
+	widthPx = heightPx * aspectW / aspectH
+
+	// Narrow windows run out of width before height.
+	if maxWidthPx := availCols * cellW; widthPx > maxWidthPx {
+		widthPx = maxWidthPx
+		heightPx = widthPx * aspectH / aspectW
+	}
+
+	if widthPx < 1 || heightPx < 1 {
+		return 0, 0, false
+	}
+	return widthPx, heightPx, true
+}
+
 // GetTerminalSize returns terminal dimensions (cols, rows, widthPx, heightPx)
 func GetTerminalSize() (cols, rows, widthPx, heightPx int, err error) {
 	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)

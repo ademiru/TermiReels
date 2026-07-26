@@ -10,12 +10,20 @@ import (
 	"github.com/gopxl/beep/v2/speaker"
 )
 
-func init() {
-	// Initialize speaker at startup
-	format := beep.Format{
-		SampleRate: beep.SampleRate(AudioSampleRate),
-	}
-	speaker.Init(format.SampleRate, format.SampleRate.N(50*1000000)) // 50ms buffer
+var (
+	speakerInitOnce sync.Once
+	speakerInitErr  error
+)
+
+// ensureSpeaker lazily opens the system audio device. Package initialization
+// used to do this before main or any test could run, which made `--shortcut`
+// unnecessarily touch audio and could hang indefinitely on headless systems.
+func ensureSpeaker() error {
+	speakerInitOnce.Do(func() {
+		format := beep.Format{SampleRate: beep.SampleRate(AudioSampleRate)}
+		speakerInitErr = speaker.Init(format.SampleRate, format.SampleRate.N(50*1000000))
+	})
+	return speakerInitErr
 }
 
 // AudioPlayer decodes and plays audio, providing the master clock
@@ -46,11 +54,20 @@ type AudioPlayer struct {
 
 // audioStreamer implements beep.Streamer for our decoded audio
 type audioStreamer struct {
-	player *AudioPlayer
-	buf    []byte
-	pos    int
-	format beep.Format
+	player    *AudioPlayer
+	buf       []byte
+	pos       int
+	format    beep.Format
+	buffering bool
 }
+
+const (
+	audioBytesPerSample = 4 // s16le stereo
+	// Hold roughly 150 ms before starting (and after an underrun). This absorbs
+	// short decoder/renderer scheduling spikes instead of exposing them as
+	// repeated clicks and gaps at the speaker.
+	audioPrebufferBytes = AudioSampleRate * audioBytesPerSample * 150 / 1000
+)
 
 func (s *audioStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 	s.player.buffMu.Lock()
@@ -65,6 +82,14 @@ func (s *audioStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 		return len(samples), true
 	}
 
+	if s.buffering {
+		if len(s.player.sampleBuf) < audioPrebufferBytes {
+			fillSilence(samples)
+			return len(samples), true
+		}
+		s.buffering = false
+	}
+
 	muted := s.player.muted.Load()
 	volume := s.player.volume.Load().(float64)
 	volume = volume * volume // since volume is (0.0 - 1.0), this scales the volume exponentially for human hearing
@@ -77,17 +102,15 @@ func (s *audioStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 	// 	b0 	 b1   b2   b3
 	//
 	// (4 bytes = 1 stereo sample)
-	bytesPerSample := 4 // (s16le stereo)
 	samplesPlayed := 0
 
 	for i := range samples {
 
-		if len(s.player.sampleBuf) < bytesPerSample {
-			// no more data, fill rest with silence but keep streaming
-			for j := i; j < len(samples); j++ {
-				samples[j][0] = 0
-				samples[j][1] = 0
-			}
+		if len(s.player.sampleBuf) < audioBytesPerSample {
+			// Do not repeatedly dip in and out of an empty buffer. Re-enter
+			// buffering and resume only after a useful cushion has accumulated.
+			fillSilence(samples[i:])
+			s.buffering = true
 			break
 		}
 
@@ -109,7 +132,7 @@ func (s *audioStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 		}
 
 		// consume
-		s.player.sampleBuf = s.player.sampleBuf[bytesPerSample:]
+		s.player.sampleBuf = s.player.sampleBuf[audioBytesPerSample:]
 		samplesPlayed++
 	}
 
@@ -122,12 +145,23 @@ func (s *audioStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 	return len(samples), true
 }
 
+func fillSilence(samples [][2]float64) {
+	for i := range samples {
+		samples[i][0] = 0
+		samples[i][1] = 0
+	}
+}
+
 func (s *audioStreamer) Err() error {
 	return nil
 }
 
 // NewAudioPlayer creates an audio player from codec parameters
 func NewAudioPlayer(codecParams *astiav.CodecParameters) (*AudioPlayer, error) {
+	if err := ensureSpeaker(); err != nil {
+		return nil, fmt.Errorf("failed to initialize audio output: %w", err)
+	}
+
 	a := &AudioPlayer{
 		sampleBuf: make([]byte, 0, 192000), // ~1 second buffer
 	}
@@ -173,8 +207,9 @@ func NewAudioPlayer(codecParams *astiav.CodecParameters) (*AudioPlayer, error) {
 
 	// Create streamer
 	a.streamer = &audioStreamer{
-		player: a,
-		format: format,
+		player:    a,
+		format:    format,
+		buffering: true,
 	}
 	a.ctrl = &beep.Ctrl{Streamer: a.streamer}
 
@@ -260,6 +295,7 @@ func (a *AudioPlayer) Time() float64 {
 
 // SetVolume sets the playback volume (0.0–1.0)
 func (a *AudioPlayer) SetVolume(vol float64) {
+	vol = min(max(vol, 0), 1)
 	a.volume.Store(vol)
 }
 
@@ -282,6 +318,7 @@ func (a *AudioPlayer) Pause() {
 func (a *AudioPlayer) Seek(seconds float64) {
 	a.buffMu.Lock()
 	a.sampleBuf = a.sampleBuf[:0]
+	a.streamer.buffering = true
 	a.buffMu.Unlock()
 
 	a.clock.Store(seconds)

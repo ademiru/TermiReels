@@ -119,10 +119,13 @@ func newPlaySession(url string, cfg sessionConfig) (*playSession, error) {
 		retinaScale: cfg.retinaScale,
 		stopCh:      make(chan struct{}),
 		seekCh:      make(chan float64, 1),
-		videoPktCh:  make(chan *astiav.Packet, 60),
+		// Keep several seconds of compressed packets ahead of rendering. Large
+		// terminal frames can briefly make Kitty transmission expensive; these
+		// queues prevent that spike from starving the interleaved audio path.
+		videoPktCh: make(chan *astiav.Packet, 180),
 	}
 	if audio != nil {
-		session.audioPktCh = make(chan *audioPacket, 128)
+		session.audioPktCh = make(chan *audioPacket, 384)
 	}
 	session.seekGen.Store(0)
 	session.seekPTS.Store(0)

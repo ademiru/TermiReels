@@ -1,22 +1,21 @@
 package backend
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
 
 type Settings struct {
-	ShowNavbar       bool
-	RetinaScale      int
+	ShowNavbar  bool
+	RetinaScale int
+	// ReelFit scales the reel to the terminal on every resize instead of
+	// holding ReelWidth/ReelHeight fixed.
+	ReelFit          bool
 	ReelWidth        int
 	ReelHeight       int
 	ReelSizeStep     int
@@ -153,11 +152,11 @@ func (b *ChromeBackend) initStorage() error {
 		return fmt.Errorf("could not create config directory")
 	}
 
-	// write default settings if settings file doesn't exist
+	// Write the config back out. On a first run this creates the file from
+	// defaults; on later runs it appends any keys added since the file was
+	// written, leaving the user's own values and comments alone.
 	settingsPath := filepath.Join(b.configDir, "reels.conf")
-	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
-		writeConf(settingsPath, defaultSettings())
-	}
+	writeConf(settingsPath, GetSettings())
 
 	return nil
 }
@@ -204,226 +203,6 @@ func (b *ChromeBackend) cacheSharePfp(name string, data []byte) string {
 	return path
 }
 
-func defaultSettings() Settings {
-	s := Settings{
-		ShowNavbar:       true,
-		RetinaScale:      1,
-		ReelWidth:        270,
-		ReelHeight:       480,
-		ReelSizeStep:     30,
-		Volume:           1,
-		GifCellHeight:    5,
-		PanelShrinkSteps: 4,
-		KeysNext:         []string{"j"},
-		KeysPrevious:     []string{"k"},
-		KeysPause:        []string{"p"},
-		KeysMute:         []string{"m"},
-		KeysLike:         []string{" "},
-		KeysRepost:       []string{"r"},
-		KeysNavbar:       []string{"e"},
-		KeysReelSizeInc:  []string{"="},
-		KeysReelSizeDec:  []string{"-"},
-		KeysVolUp:        []string{"]"},
-		KeysVolDown:      []string{"["},
-		KeysQuit:         []string{"q", "ctrl+c"},
-		KeysCopyLink:     []string{"y"},
-		KeysSave:         []string{"b"},
-		KeysSeekForward:  []string{"l"},
-		KeysSeekBackward: []string{"h"},
-		KeysSelect:       []string{" "},
-
-		KeysShareOpen:  []string{"s"},
-		KeysShareClose: []string{"S"},
-
-		KeysCommentsOpen:  []string{"c"},
-		KeysCommentsClose: []string{"C"},
-
-		KeysHelpOpen:  []string{"?"},
-		KeysHelpClose: []string{"?"},
-
-		KeysChatsOpen:  []string{"d"},
-		KeysChatsClose: []string{"D"},
-
-		KeysReactOpen:  []string{"x"},
-		KeysReactClose: []string{"X"},
-	}
-
-	if goruntime.GOOS == "darwin" {
-		s.RetinaScale = 2
-	}
-	return s
-}
-
-// LoadSettings loads reels.conf from configDir into Config. Loads default settings on error
-func LoadSettings(configDir string) {
-
-	loadKey := func(conf map[string][]string, name string, dest *[]string) {
-		if vals, ok := conf[name]; ok {
-			resolved := make([]string, len(vals))
-			for i, v := range vals {
-				if r, ok := ConfToKey[v]; ok {
-					resolved[i] = r
-				} else {
-					resolved[i] = v
-				}
-			}
-			*dest = resolved
-		}
-	}
-
-	s := defaultSettings()
-
-	path := filepath.Join(configDir, "reels.conf")
-	conf := parseConf(path)
-
-	if vals, ok := conf["show_navbar"]; ok {
-		s.ShowNavbar = (vals[len(vals)-1] == "true")
-	}
-	if vals, ok := conf["retina_scale"]; ok {
-		if n, err := strconv.Atoi(vals[len(vals)-1]); err == nil {
-			s.RetinaScale = n
-		}
-	}
-	if vals, ok := conf["reel_width"]; ok {
-		if n, err := strconv.Atoi(vals[len(vals)-1]); err == nil {
-			s.ReelWidth = n
-		}
-	}
-	if vals, ok := conf["reel_height"]; ok {
-		if n, err := strconv.Atoi(vals[len(vals)-1]); err == nil {
-			s.ReelHeight = n
-		}
-	}
-	if vals, ok := conf["reel_size_step"]; ok {
-		if n, err := strconv.Atoi(vals[len(vals)-1]); err == nil {
-			s.ReelSizeStep = n
-		}
-	}
-	if vals, ok := conf["volume"]; ok {
-		if n, err := strconv.ParseFloat(vals[len(vals)-1], 64); err == nil {
-			s.Volume = n
-		}
-	}
-	if vals, ok := conf["gif_cell_height"]; ok {
-		if n, err := strconv.Atoi(vals[len(vals)-1]); err == nil {
-			s.GifCellHeight = n
-		}
-	}
-	if vals, ok := conf["panel_shrink_steps"]; ok {
-		if n, err := strconv.Atoi(vals[len(vals)-1]); err == nil {
-			s.PanelShrinkSteps = n
-		}
-	}
-
-	loadKey(conf, "key_next", &s.KeysNext)
-	loadKey(conf, "key_previous", &s.KeysPrevious)
-	loadKey(conf, "key_pause", &s.KeysPause)
-	loadKey(conf, "key_mute", &s.KeysMute)
-	loadKey(conf, "key_like", &s.KeysLike)
-	loadKey(conf, "key_repost", &s.KeysRepost)
-	loadKey(conf, "key_navbar", &s.KeysNavbar)
-	loadKey(conf, "key_vol_up", &s.KeysVolUp)
-	loadKey(conf, "key_vol_down", &s.KeysVolDown)
-	loadKey(conf, "key_reel_size_inc", &s.KeysReelSizeInc)
-	loadKey(conf, "key_reel_size_dec", &s.KeysReelSizeDec)
-	loadKey(conf, "key_quit", &s.KeysQuit)
-	loadKey(conf, "key_copy_link", &s.KeysCopyLink)
-	loadKey(conf, "key_save", &s.KeysSave)
-	loadKey(conf, "key_seek_forward", &s.KeysSeekForward)
-	loadKey(conf, "key_seek_backward", &s.KeysSeekBackward)
-	loadKey(conf, "key_select", &s.KeysSelect)
-	loadKey(conf, "key_share_open", &s.KeysShareOpen)
-	loadKey(conf, "key_share_close", &s.KeysShareClose)
-	loadKey(conf, "key_comments_open", &s.KeysCommentsOpen)
-	loadKey(conf, "key_comments_close", &s.KeysCommentsClose)
-	loadKey(conf, "key_help_open", &s.KeysHelpOpen)
-	loadKey(conf, "key_help_close", &s.KeysHelpClose)
-	loadKey(conf, "key_friends_open", &s.KeysChatsOpen)
-	loadKey(conf, "key_friends_close", &s.KeysChatsClose)
-	loadKey(conf, "key_react_open", &s.KeysReactOpen)
-	loadKey(conf, "key_react_close", &s.KeysReactClose)
-
-	Config = s
-}
-
-func writeConf(path string, s Settings) error {
-	writeKeys := func(b *strings.Builder, name string, keys []string) {
-		for _, key := range keys {
-			if v, ok := KeyToConf[key]; ok {
-				b.WriteString(fmt.Sprintf("%s = %s\n", name, v))
-			} else {
-				b.WriteString(fmt.Sprintf("%s = %s\n", name, key))
-			}
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString("# insta reels TUI config\n\n")
-	b.WriteString(fmt.Sprintf("show_navbar = %t\n", s.ShowNavbar))
-	b.WriteString(fmt.Sprintf("retina_scale = %d\n", s.RetinaScale))
-	b.WriteString("\n")
-	b.WriteString("# reels will be scales within this bounding box\n")
-	b.WriteString(fmt.Sprintf("reel_width = %d\n", s.ReelWidth))
-	b.WriteString(fmt.Sprintf("reel_height = %d\n", s.ReelHeight))
-	b.WriteString(fmt.Sprintf("reel_size_step = %d\n", s.ReelSizeStep))
-	b.WriteString(fmt.Sprintf("volume = %g\n", s.Volume))
-	b.WriteString(fmt.Sprintf("gif_cell_height = %d\n", s.GifCellHeight))
-	b.WriteString(fmt.Sprintf("panel_shrink = %d\n", s.PanelShrinkSteps))
-	b.WriteString("\n")
-	b.WriteString("# configurable keybinds\n")
-	writeKeys(&b, "key_next", s.KeysNext)
-	writeKeys(&b, "key_previous", s.KeysPrevious)
-	writeKeys(&b, "key_pause", s.KeysPause)
-	writeKeys(&b, "key_mute", s.KeysMute)
-	writeKeys(&b, "key_like", s.KeysLike)
-	writeKeys(&b, "key_repost", s.KeysRepost)
-	writeKeys(&b, "key_navbar", s.KeysNavbar)
-	writeKeys(&b, "key_vol_up", s.KeysVolUp)
-	writeKeys(&b, "key_vol_down", s.KeysVolDown)
-	writeKeys(&b, "key_reel_size_inc", s.KeysReelSizeInc)
-	writeKeys(&b, "key_reel_size_dec", s.KeysReelSizeDec)
-	writeKeys(&b, "key_copy_link", s.KeysCopyLink)
-	writeKeys(&b, "key_save", s.KeysSave)
-	writeKeys(&b, "key_quit", s.KeysQuit)
-	writeKeys(&b, "key_seek_forward", s.KeysSeekForward)
-	writeKeys(&b, "key_seek_backward", s.KeysSeekBackward)
-	writeKeys(&b, "key_select", s.KeysSelect)
-	writeKeys(&b, "key_share_open", s.KeysShareOpen)
-	writeKeys(&b, "key_share_close", s.KeysShareClose)
-	writeKeys(&b, "key_comments_open", s.KeysCommentsOpen)
-	writeKeys(&b, "key_comments_close", s.KeysCommentsClose)
-	writeKeys(&b, "key_help_open", s.KeysHelpOpen)
-	writeKeys(&b, "key_help_close", s.KeysHelpClose)
-	writeKeys(&b, "key_friends_open", s.KeysChatsOpen)
-	writeKeys(&b, "key_friends_close", s.KeysChatsClose)
-	writeKeys(&b, "key_react_open", s.KeysReactOpen)
-	writeKeys(&b, "key_react_close", s.KeysReactClose)
-
-	return os.WriteFile(path, []byte(b.String()), 0644)
-}
-
-func parseConf(path string) map[string][]string {
-	result := make(map[string][]string)
-	file, err := os.Open(path)
-	if err != nil {
-		return result
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if k, v, ok := strings.Cut(line, "="); ok {
-			key := strings.TrimSpace(k)
-			result[key] = append(result[key], strings.TrimSpace(v))
-		}
-	}
-	return result
-}
-
 // SetReelSize updates the reel bounding box dimensions and persists to disk.
 func (b *ChromeBackend) SetReelSize(width, height int) error {
 	settingsMu.Lock()
@@ -433,7 +212,19 @@ func (b *ChromeBackend) SetReelSize(width, height int) error {
 	settingsMu.Unlock()
 
 	path := filepath.Join(b.configDir, "reels.conf")
-	go writeConf(path, snapshot)
+	queueConfWrite(path, snapshot)
+	return nil
+}
+
+// SetReelFit turns terminal-fitted reel sizing on or off and persists it.
+func (b *ChromeBackend) SetReelFit(fit bool) error {
+	settingsMu.Lock()
+	Config.ReelFit = fit
+	snapshot := Config
+	settingsMu.Unlock()
+
+	path := filepath.Join(b.configDir, "reels.conf")
+	queueConfWrite(path, snapshot)
 	return nil
 }
 
@@ -446,19 +237,20 @@ func (b *ChromeBackend) ToggleNavbar() bool {
 	settingsMu.Unlock()
 
 	path := filepath.Join(b.configDir, "reels.conf")
-	go writeConf(path, snapshot)
+	queueConfWrite(path, snapshot)
 	return showNavbar
 }
 
 // SetVolume updates volume and persists to disk
 func (b *ChromeBackend) SetVolume(vol float64) error {
+	vol = min(max(vol, 0), 1)
 	settingsMu.Lock()
 	Config.Volume = vol
 	snapshot := Config
 	settingsMu.Unlock()
 
 	path := filepath.Join(b.configDir, "reels.conf")
-	go writeConf(path, snapshot)
+	queueConfWrite(path, snapshot)
 	return nil
 }
 

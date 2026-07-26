@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ademiru/TermiReels/tui/colors"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
-	"github.com/njyeung/reels/tui/colors"
 )
 
 const loadingBarWidth = 34

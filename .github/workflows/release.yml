@@ -3,155 +3,76 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  build-linux:
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image with FFmpeg 8
-        run: |
-          docker build -f Dockerfile.build -t reels-builder .
-
-      - name: Build binary in container
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          docker run --rm -v ${{ github.workspace }}:/app reels-builder \
-            go build -buildvcs=false -ldflags "-s -w -X main.Version=$VERSION" -o reels-linux-${{ matrix.arch }} .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: reels-linux-${{ matrix.arch }}
-          path: reels-linux-${{ matrix.arch }}
-
-  build-macos:
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Install build tools
-        run: |
-          brew install meson nasm
-
-      - name: Build dav1d 1.5.1 (static)
-        run: |
-          git clone --depth 1 --branch 1.5.1 https://code.videolan.org/videolan/dav1d.git /tmp/dav1d
-          cd /tmp/dav1d
-          meson setup build --default-library=static --prefix=/usr/local \
-              --buildtype=release -Denable_tools=false -Denable_tests=false
-          ninja -C build
-          sudo ninja -C build install
-
-      - name: Build FFmpeg 8.0.1 (static, decode-only, minimal)
-        run: |
-          curl -sL https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz -o /tmp/ffmpeg-8.0.1.tar.xz
-          tar xf /tmp/ffmpeg-8.0.1.tar.xz -C /tmp
-          cd /tmp/ffmpeg-8.0.1
-          ./configure \
-              --prefix=/usr/local \
-              --enable-gpl \
-              --enable-version3 \
-              --enable-libdav1d \
-              --enable-static \
-              --disable-shared \
-              --disable-doc \
-              --disable-debug \
-              --disable-programs \
-              --disable-encoders \
-              --disable-muxers \
-              --disable-devices \
-              --disable-filters \
-              --enable-filter=aresample \
-              --enable-filter=scale \
-              --enable-filter=null \
-              --enable-filter=anull \
-              --disable-network \
-              --disable-autodetect \
-              --enable-pthreads \
-              --enable-zlib
-          make -j$(sysctl -n hw.ncpu)
-          sudo make install
-
-      - name: Build
-        env:
-          CGO_ENABLED: 1
-          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-          CGO_CFLAGS: "-I/usr/local/include"
-          CGO_LDFLAGS: "-L/usr/local/lib -lavdevice -lavformat -lavcodec -ldav1d -lz -lavfilter -lm -lswscale -lswresample -lavutil -pthread"
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          go build -ldflags "-s -w -X main.Version=$VERSION" -o reels-darwin-arm64 .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: reels-darwin-arm64
-          path: reels-darwin-arm64
-
-  release:
-    needs: [build-linux, build-macos]
+  verify:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+      - name: Build FFmpeg test environment
+        run: docker build -f Dockerfile.build -t termireels-builder .
 
-      - name: Create source tarball
+      - name: Test source
         run: |
-          git archive --format=tar.gz --prefix=reels-${GITHUB_REF_NAME#v}/ HEAD > artifacts/reels-${GITHUB_REF_NAME#v}.tar.gz
+          docker run --rm -v "${{ github.workspace }}:/app" termireels-builder \
+            sh -c 'gofmt -l . | tee /tmp/unformatted &&
+              test ! -s /tmp/unformatted &&
+              go test -count=1 -timeout 120s ./... &&
+              go vet ./... &&
+              go build -buildvcs=false -o /tmp/termireels .'
+
+  release-source:
+    needs: verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check release metadata
+        run: |
+          test -f LICENSE
+          test -f THIRD_PARTY_NOTICES.md
+          test -f CHANGELOG.md
+
+      - name: Create source archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          git archive \
+            --format=tar.gz \
+            --prefix="termireels-${VERSION}/" \
+            -o "dist/termireels-${VERSION}.tar.gz" \
+            HEAD
+          sha256sum "dist/termireels-${VERSION}.tar.gz" \
+            > "dist/termireels-${VERSION}.tar.gz.sha256"
 
       - name: Extract changelog
         id: changelog
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          # Extract the section for this version (between its heading and the next heading)
+          VERSION="${GITHUB_REF_NAME#v}"
           BODY=$(awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
-          # Fall back to auto-generated notes if no changelog entry exists
           if [ -z "$BODY" ]; then
-            echo "found=false" >> $GITHUB_OUTPUT
+            echo "found=false" >> "$GITHUB_OUTPUT"
           else
-            echo "found=true" >> $GITHUB_OUTPUT
+            echo "found=true" >> "$GITHUB_OUTPUT"
             {
               echo "body<<EOF"
               echo "$BODY"
               echo "EOF"
-            } >> $GITHUB_OUTPUT
+            } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create release
-        uses: softprops/action-gh-release@v1
+      - name: Publish source release
+        uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/reels-linux-amd64/reels-linux-amd64
-            artifacts/reels-linux-arm64/reels-linux-arm64
-            artifacts/reels-darwin-arm64/reels-darwin-arm64
-            artifacts/reels-*.tar.gz
+            dist/termireels-*.tar.gz
+            dist/termireels-*.tar.gz.sha256
           body: ${{ steps.changelog.outputs.found == 'true' && steps.changelog.outputs.body || '' }}
           generate_release_notes: ${{ steps.changelog.outputs.found != 'true' }}

@@ -1,88 +1,30 @@
-# Contributing to Reels
+# Contributing
 
-Thanks for your interest in contributing!
+Bug reports should include the operating system, terminal emulator, TermiReels
+version and steps that reproduce the problem.
 
-## Philosophy
+Before submitting a change, run:
 
-Reels is an Instagram **reels** client, not a full Instagram client. Features outside that focus (group-chat messaging, browsing a user's profile, etc.) are unlikely to be accepted.
+```bash
+gofmt -w .
+go test ./...
+go vet ./...
+```
 
-Two design principles worth knowing before you build something:
+The main packages are:
 
-- **Browser automation first.** Driving a real browser both lowers the risk of Instagram flagging the account and keeps your Instagram algorithm in sync with your actual behavior (watch time, likes, and so on). A client that genuinely influences your feed is part of this project.
-- **Private API endpoints, used sparingly.** Some features hit Instagram's private GraphQL API. It's convenient but riskier, and it needs ongoing maintenance since the `doc_id`s change whenever Instagram updates their frontend (see below).
+- `backend/`: Chromium automation, Instagram requests, caching and settings
+- `player/`: FFmpeg decoding, audio and Kitty graphics rendering
+- `tui/`: Bubble Tea interface and input handling
 
-Small bug fixes and features are always welcome. For a large change or refactor, **open an issue first** describing the problem and your intended approach.
+Instagram changes its frontend frequently. Changes to GraphQL identifiers or
+DOM selectors should include the date and the browser request or element used
+to verify them. Do not include account cookies, tokens or personal request
+headers in issues or commits.
 
-<p align="center">
-  <img src="assets/contributing-picture-1.png" alt="Browser automation" width="50%" />
-  <img src="assets/contributing-picture-2.png" alt="Private API endpoints" width="35%" />
-</p>
+Large changes should be discussed in an issue before implementation. Keep
+commits focused and describe user-visible changes in `CHANGELOG.md`.
 
-## Reporting issues
-
-Please include:
-
-- OS and architecture
-- Terminal emulator
-- Reels version
-- Steps to reproduce
-
-Consumer binaries ship without logging, so there's usually no log to attach. If you've forked and added logging, include the relevant lines from `~/.local/state/reels/reels.log`.
-
-### Project layout
-
-- `backend/` - Instagram interaction, GraphQL interception, Storage, Config parsing. 
-- `tui/` - Bubble Tea UI
-- `player/` - AV playback (astiav, beep)
-- `main.go` - Entry point
-
-## Development setup
-
-Building from source is covered in the [README](README.md#building-from-source-for-developers) (Go 1.25+, FFmpeg 8+ dev libraries). FFmpeg 8+ is required because go-astiav only supports 8+; when it moves to a newer version, so do we.
-
-- Run with `--headed` to show the browser window, which makes debugging much easier.
-- `log.go` provides a logging helper. Keep logging **out of `main`**. Use it on feature branches while developing, then strip it before merging to keep consumer binaries clean.
-
-## Building & testing
-
-During development, you are encouraged to dynamically link against your system's FFmpeg and build with `go build -o reels` for convenience.
-
-However, you must also ensure that your final code builds valid consumer binaries with statically linked FFmpeg via Github Actions.
-
-1. On a fork, push your changes to remote.
-2. Push a new tag to trigger the build.
-3. Confirm all target binaries build successfully.
-
-Testing is difficult because there are so many ways to interact with Instagram, but `tests/` takes a black-box approach. `test.py` builds the binary, runs it under Kitty, and drives Reels TUI by sending keystrokes and observing browser state. You'll need a logged-in account, Kitty, Chrome, and FFmpeg 8+. Coverage is minimal and contributions are welcome, as long as they keep treating the app as a black box.
-
-You are also welcome to scroll reels for a few minutes to test your feature. That is already more coverage than the existing tests.
-
-## Commit & PR conventions
-
-- Fork and open PRs against `main`.
-- - Run `go vet ./...` and `gofmt`.
-- Use [Conventional Commits](https://www.conventionalcommits.org/) and squash related commits.
-- I'll maintain the changelog, no need to touch it.
-- Small fixes need only a brief description; large PRs need a detailed explanation of the problem and approach.
-
-## Updating Instagram's GraphQL constants
-
-Instagram periodically changes their frontend GraphQL API. When they do, some features that rely on hitting their private endpoints will stop working. The fix involves updating constants in the code, such as `doc_id`s, `fb_api_req_friendly_name` values, and the `x-ig-app-id` header.
-
-This is automated with several Claude skills in [`skills/`](skills/). See [`skills/README.md`](skills/README.md).
-
-By invoking a skill, Claude will walk you through how to obtain the new constants via the network tab. Thus, fixing these makes for great first-time PRs!
-
-## AI-assisted contributions
-
-AI tooling is perfectly fine. However, review AI output unless it's a repetitive task backed by a dedicated skill.
-
-## Maintainer-only tasks
-
-Releases and package distribution (AUR / Homebrew / npm submodules) are handled by the
-maintainer. Contributors don't touch version tags, changelog release entries, or the
-distribution submodules.
-
-## Contact
-
-GitHub issues only.
+By contributing, you agree that your contribution may be distributed under
+the repository's MIT License. Do not submit code, graphics or other material
+that you do not have permission to redistribute.
