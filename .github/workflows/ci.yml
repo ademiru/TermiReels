@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build FFmpeg test environment
+        run: docker build -f Dockerfile.build -t termireels-builder .
+
+      - name: Format, test, vet and build
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/app" termireels-builder \
+            sh -c 'gofmt -l . | tee /tmp/unformatted &&
+              test ! -s /tmp/unformatted &&
+              go test -count=1 -timeout 120s ./... &&
+              go vet ./... &&
+              go build -buildvcs=false -o /tmp/termireels .'
