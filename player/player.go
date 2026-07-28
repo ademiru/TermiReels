@@ -1,6 +1,7 @@
 package player
 
 import (
+	"fmt"
 	"image/color"
 	_ "image/jpeg"
 	"io"
@@ -41,6 +42,9 @@ type AVPlayer struct {
 
 	videoRow int // 1-indexed terminal row where the video starts (set by TUI)
 	videoCol int // 1-indexed terminal col where the video starts (set by TUI)
+
+	events   chan PlaybackEvent
+	counters playbackCounters
 }
 
 func (p *AVPlayer) sessionConfig() sessionConfig {
@@ -97,9 +101,28 @@ func NewAVPlayer() *AVPlayer {
 	p := &AVPlayer{
 		output:      os.Stdout,
 		retinaScale: 1,
+		events:      make(chan PlaybackEvent, 16),
 	}
 	p.volume.Store(float64(1))
 	return p
+}
+
+func (p *AVPlayer) Events() <-chan PlaybackEvent { return p.events }
+
+func (p *AVPlayer) emit(event PlaybackEvent) {
+	select {
+	case p.events <- event:
+	default:
+	}
+}
+
+func (p *AVPlayer) Health() PlaybackHealth {
+	return PlaybackHealth{
+		FramesRendered: p.counters.framesRendered.Load(),
+		FramesDropped:  p.counters.framesDropped.Load(),
+		Errors:         p.counters.errors.Load(),
+		Restarts:       p.counters.restarts.Load(),
+	}
 }
 
 // SetOutput sets the writer for video frames
@@ -241,8 +264,11 @@ func (p *AVPlayer) initSession(videoPath string) (*playSession, error) {
 func (p *AVPlayer) playbackLoop(videoPath string, session *playSession) {
 	defer p.playMu.Unlock()
 
+	const maxConsecutiveFailures = 2
+	consecutiveFailures := 0
+
 	for {
-		session.run(p)
+		runErr := session.run(p)
 		p.clearSession(session)
 		session.cleanup()
 
@@ -250,9 +276,26 @@ func (p *AVPlayer) playbackLoop(videoPath string, session *playSession) {
 			return
 		}
 
+		if runErr != nil {
+			p.counters.errors.Add(1)
+			consecutiveFailures++
+			if consecutiveFailures >= maxConsecutiveFailures {
+				p.playing.Store(false)
+				p.emit(PlaybackEvent{Type: PlaybackFailed, Err: runErr})
+				return
+			}
+			p.counters.restarts.Add(1)
+			p.emit(PlaybackEvent{Type: PlaybackRestarting, Err: runErr})
+		} else {
+			consecutiveFailures = 0
+		}
+
 		var err error
 		session, err = p.initSession(videoPath)
 		if err != nil {
+			p.counters.errors.Add(1)
+			p.playing.Store(false)
+			p.emit(PlaybackEvent{Type: PlaybackFailed, Err: fmt.Errorf("restart playback: %w", err)})
 			return
 		}
 	}

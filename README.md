@@ -94,17 +94,17 @@ support mouse input. All keyboard bindings can be changed with:
 
 ## Data files
 
-TermiReels currently keeps compatibility with the original application's
-paths:
-
 ```text
-~/.config/reels/reels.conf
-~/.cache/reels/
-~/.local/share/reels/chrome-data/
-~/.local/state/reels/
+~/.config/termireels/reels.conf
+~/.cache/termireels/
+~/.local/share/termireels/chrome-data/
+~/.local/state/termireels/
 ```
 
-The configuration file is reloaded while the application is running.
+Legacy `reels` directories are moved on first start only when the corresponding
+TermiReels directory does not already exist. A failed move falls back to the
+legacy path without deleting or merging data. The configuration file is
+reloaded while the application is running.
 
 ## What this fork changes
 

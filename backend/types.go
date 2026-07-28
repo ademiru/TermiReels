@@ -205,6 +205,13 @@ type Backend interface {
 	ReactToCurrent(emoji string) error
 }
 
+// ContextDownloader is an optional extension used for speculative prefetches.
+// The normal Download method remains available for the reel the user actually
+// requested, while prefetch work can be cancelled as navigation changes.
+type ContextDownloader interface {
+	DownloadContext(ctx context.Context, index int) (videoPath string, pfpPath string, floatingPfps []FloatingPfpFile, err error)
+}
+
 const (
 	// MaxRetries is the maximum number of scroll/retry attempts for sync operations
 	MaxRetries = 30

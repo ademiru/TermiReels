@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"io"
 	"slices"
 	"time"
@@ -22,6 +23,7 @@ type (
 	reelErrorMsg      struct{ err error }
 	feedMoreFailedMsg struct{}
 	backendEventMsg   backend.Event
+	playbackEventMsg  player.PlaybackEvent
 	videoErrorMsg     struct{ err error }
 	videoReadyMsg     struct {
 		index           int
@@ -165,6 +167,10 @@ type Model struct {
 	// the burst of events a high-resolution scroll produces
 	lastWheelStep time.Time
 
+	// prefetchCancel stops downloads that belong to a reel the user has
+	// already navigated away from.
+	prefetchCancel context.CancelFunc
+
 	// repostSpin counts down the frames left in the repost icon's animation;
 	// repostGen discards ticks from a superseded animation
 	repostSpin int
@@ -238,6 +244,7 @@ func (m Model) Init() tea.Cmd {
 		m.checkVersion,
 		m.fetchLoadingMessages,
 		m.watchConfig(),
+		m.listenForPlaybackEvents,
 	)
 }
 
@@ -294,6 +301,10 @@ func (m Model) listenForEvents() tea.Msg {
 	return backendEventMsg(event)
 }
 
+func (m Model) listenForPlaybackEvents() tea.Msg {
+	return playbackEventMsg(<-m.player.Events())
+}
+
 func (m Model) loadCurrentReel() tea.Msg {
 	info, err := m.backend.GetCurrent()
 	if err != nil {
@@ -334,6 +345,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if slices.Contains(backend.GetSettings().KeysQuit, key) {
 			// The panel-open shrink is derived at render time and never
 			// persisted, so there is nothing to restore before quitting.
+			if m.prefetchCancel != nil {
+				m.prefetchCancel()
+			}
 			m.player.Close()
 			if m.backend != nil {
 				m.backend.Stop()
@@ -543,6 +557,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.listenForEvents
 
+	case playbackEventMsg:
+		event := player.PlaybackEvent(msg)
+		switch event.Type {
+		case player.PlaybackRestarting:
+			return m, tea.Batch(
+				m.hud.ShowToast("recovering playback"),
+				m.listenForPlaybackEvents,
+			)
+		case player.PlaybackFailed:
+			m.status = statusVideoError
+			m.lastErr = event.Err
+			return m, tea.Batch(
+				m.hud.ShowToast("playback stopped safely"),
+				m.listenForPlaybackEvents,
+			)
+		default:
+			return m, m.listenForPlaybackEvents
+		}
+
 	case reelLoadedMsg:
 		m.currentReel = msg.info
 		m.status = statusNone
@@ -606,7 +639,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.floating = append(slices.Clone(msg.contextFloating), msg.chatFloating...)
 		m.updateVideoPosition()
 		m.updateImages()
-		go m.prefetch(msg.index)
+		if m.prefetchCancel != nil {
+			m.prefetchCancel()
+		}
+		prefetchCtx, cancel := context.WithCancel(context.Background())
+		m.prefetchCancel = cancel
+		go m.prefetch(prefetchCtx, msg.index)
 		return m, nil
 
 	case selfReactedMsg:

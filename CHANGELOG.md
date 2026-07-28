@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Stop infinite silent playback restart loops, expose background failures, and track rendered/dropped frames, errors, and recoveries
+- Cancel stale reel prefetch requests immediately when navigation changes
+- Migrate legacy `reels` data directories to `termireels` with no-overwrite and safe fallback behavior
+- Cache the FFmpeg build environment between CI and release verification runs
 - Unify footer button states and add stable scrolling caption/music tickers
 - Render music metadata with a colourful brand-gradient treatment
 - Smooth playback with audio prebuffering, automatic underrun recovery, and deeper packet queues

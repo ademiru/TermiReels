@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -643,15 +644,24 @@ func (m *Model) startPlayback(index int) tea.Cmd {
 	}
 }
 
-func (m Model) prefetch(index int) {
+func (m Model) prefetch(ctx context.Context, index int) {
+	downloader, cancellable := m.backend.(backend.ContextDownloader)
+	download := func(i int) {
+		if cancellable {
+			_, _, _, _ = downloader.DownloadContext(ctx, i)
+			return
+		}
+		_, _, _, _ = m.backend.Download(i)
+	}
+
 	toDownload1 := index + 1
 	toDownload2 := index + 2
 
 	if toDownload1 <= m.backend.GetTotal() {
-		m.backend.Download(toDownload1)
+		download(toDownload1)
 	}
 	if toDownload2 <= m.backend.GetTotal() {
-		m.backend.Download(toDownload2)
+		download(toDownload2)
 	}
 }
 
@@ -761,6 +771,10 @@ func (m *Model) navigateToReel(direction int) tea.Cmd {
 	}
 	if index < 1 {
 		return nil
+	}
+	if m.prefetchCancel != nil {
+		m.prefetchCancel()
+		m.prefetchCancel = nil
 	}
 	if direction > 0 && index > m.backend.GetTotal() {
 		m.player.Stop()
