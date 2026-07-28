@@ -69,10 +69,11 @@ jobs:
           fi
 
       - name: Publish source release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/termireels-*.tar.gz
             dist/termireels-*.tar.gz.sha256
           body: ${{ steps.changelog.outputs.found == 'true' && steps.changelog.outputs.body || '' }}
           generate_release_notes: ${{ steps.changelog.outputs.found != 'true' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
