@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -48,6 +49,11 @@ func (m Model) viewBrowsing() string {
 
 	// HUD remains above the reel, but controls now live in a stable footer.
 	place(0, 0, m.viewHUD(videoWidthChars, videoY, strings.Repeat(" ", videoX)))
+	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
+		state := profile.CreatorProfile()
+		header := buildProfileHeaderLayout(state, videoWidthChars)
+		place(max(videoY-1, 0), videoX, header.render())
+	}
 
 	var statusContent string
 	for _, seg := range m.statusSegments() {
@@ -272,8 +278,31 @@ func (m Model) updateBrowsing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	config := backend.GetSettings()
 	key := msg.String()
+	profile, profileAvailable := m.backend.(backend.ProfileBackend)
 
 	switch {
+	case profileAvailable && !m.profileBusy && profile.IsProfileMode() && slices.Contains(config.KeysProfileBack, key):
+		m.profileBusy = true
+		m.player.Stop()
+		m.status = statusLoading
+		m.comments.Clear()
+		return m, m.exitCreatorProfile(profile)
+
+	case profileAvailable && !m.profileBusy && profile.IsProfileMode() && slices.Contains(config.KeysProfileFollow, key):
+		m.profileBusy = true
+		return m, m.toggleCreatorFollow(profile)
+
+	case profileAvailable && !m.profileBusy && !profile.IsProfileMode() && !m.backend.IsChatMode() &&
+		slices.Contains(config.KeysProfileOpen, key):
+		if m.currentReel == nil {
+			return m, nil
+		}
+		m.player.Stop()
+		m.profileBusy = true
+		m.status = statusLoading
+		m.comments.Clear()
+		return m, m.enterCreatorProfile(profile, m.currentReel.Username)
+
 	// Chats panel select takes priority over other keys
 	case m.chats.IsOpen() && slices.Contains(config.KeysSelect, key):
 		chat := m.chats.CursorChat()
@@ -477,6 +506,35 @@ func sentToast(friends int) string {
 	}
 }
 
+func (m Model) enterCreatorProfile(profile backend.ProfileBackend, username string) tea.Cmd {
+	return func() tea.Msg {
+		info, err := profile.EnterCreatorProfile(username)
+		if err != nil {
+			current, _ := m.backend.GetCurrent()
+			return profileActionFailedMsg{action: "opening profile", err: err, info: current}
+		}
+		return profileEnteredMsg{info: info}
+	}
+}
+
+func (m Model) exitCreatorProfile(profile backend.ProfileBackend) tea.Cmd {
+	return func() tea.Msg {
+		info, err := profile.ExitCreatorProfile()
+		if err != nil {
+			current, _ := m.backend.GetCurrent()
+			return profileActionFailedMsg{action: "returning to feed", err: err, info: current}
+		}
+		return profileExitedMsg{info: info}
+	}
+}
+
+func (m Model) toggleCreatorFollow(profile backend.ProfileBackend) tea.Cmd {
+	return func() tea.Msg {
+		following, err := profile.ToggleCreatorFollow()
+		return profileFollowedMsg{following: following, err: err}
+	}
+}
+
 // seek jumps playback by delta seconds and flashes where it landed. Without
 // this the only feedback is the progress bar burned into the frame, which is
 // too subtle to read while scrubbing.
@@ -643,15 +701,24 @@ func (m *Model) startPlayback(index int) tea.Cmd {
 	}
 }
 
-func (m Model) prefetch(index int) {
+func (m Model) prefetch(ctx context.Context, index int) {
+	downloader, cancellable := m.backend.(backend.ContextDownloader)
+	download := func(i int) {
+		if cancellable {
+			_, _, _, _ = downloader.DownloadContext(ctx, i)
+			return
+		}
+		_, _, _, _ = m.backend.Download(i)
+	}
+
 	toDownload1 := index + 1
 	toDownload2 := index + 2
 
 	if toDownload1 <= m.backend.GetTotal() {
-		m.backend.Download(toDownload1)
+		download(toDownload1)
 	}
 	if toDownload2 <= m.backend.GetTotal() {
-		m.backend.Download(toDownload2)
+		download(toDownload2)
 	}
 }
 
@@ -747,7 +814,7 @@ func (m Model) discoverNextReel(afterIndex int) tea.Cmd {
 // tail of the main feed it asks Instagram for another lazy page instead of
 // treating the cache boundary as the end.
 func (m *Model) navigateToReel(direction int) tea.Cmd {
-	if m.currentReel == nil || m.status == statusLoading {
+	if m.currentReel == nil || m.status == statusLoading || m.profileBusy {
 		return nil
 	}
 	index := m.currentReel.Index + direction
@@ -762,6 +829,10 @@ func (m *Model) navigateToReel(direction int) tea.Cmd {
 	if index < 1 {
 		return nil
 	}
+	if m.prefetchCancel != nil {
+		m.prefetchCancel()
+		m.prefetchCancel = nil
+	}
 	if direction > 0 && index > m.backend.GetTotal() {
 		m.player.Stop()
 		m.status = statusLoading
@@ -774,6 +845,19 @@ func (m *Model) navigateToReel(direction int) tea.Cmd {
 	m.player.Stop()
 	m.status = statusLoading
 	m.comments.Clear()
+	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
+		m.profileBusy = true
+		return func() tea.Msg {
+			if err := m.backend.SyncTo(index); err != nil {
+				return reelErrorMsg{err}
+			}
+			info, err := m.backend.GetCurrent()
+			if err != nil {
+				return reelErrorMsg{err}
+			}
+			return reelLoadedMsg{info: info}
+		}
+	}
 	if info, err := m.backend.GetReel(index); err == nil {
 		m.currentReel = info
 	}

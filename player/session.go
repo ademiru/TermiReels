@@ -453,6 +453,7 @@ func (s *playSession) videoRenderLoop(p *AVPlayer) error {
 			if diff > SyncThreshold {
 				time.Sleep(time.Duration(diff * float64(time.Second) * 0.2))
 			} else if diff < -SyncThreshold {
+				p.counters.framesDropped.Add(1)
 				continue
 			}
 		} else if s.audio == nil {
@@ -462,6 +463,7 @@ func (s *playSession) videoRenderLoop(p *AVPlayer) error {
 			if diff > SyncThreshold {
 				time.Sleep(time.Duration(diff * float64(time.Second) * 0.2))
 			} else if diff < -SyncThreshold {
+				p.counters.framesDropped.Add(1)
 				continue
 			}
 		}
@@ -486,6 +488,7 @@ func (s *playSession) videoRenderLoop(p *AVPlayer) error {
 
 		s.renderer.Prune(keep)
 		s.renderer.EndSync()
+		p.counters.framesRendered.Add(1)
 	}
 
 	return nil

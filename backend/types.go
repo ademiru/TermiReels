@@ -33,6 +33,13 @@ type ChromeBackend struct {
 	feed   *FeedCursor
 	active Cursor
 
+	// profile is a temporary, independent creator-reels source. The feed
+	// cursor and its position remain intact while it is active.
+	profile            *ProfileCursor
+	profileReturnIndex int
+	profileState       CreatorProfileState
+	profileOpMu        sync.Mutex
+
 	// dmCtx is the secondary chromedp window used for chat-mode navigation
 	// and DM-inbox collection. Created once by startDMSession after the feed
 	// is up; lives until Stop. Nil if the session never started.
@@ -203,6 +210,13 @@ type Backend interface {
 	// ReactToCurrent toggles emoji as the viewer's DM reel reaction: repeating
 	// the current reaction removes it, any other emoji replaces it
 	ReactToCurrent(emoji string) error
+}
+
+// ContextDownloader is an optional extension used for speculative prefetches.
+// The normal Download method remains available for the reel the user actually
+// requested, while prefetch work can be cancelled as navigation changes.
+type ContextDownloader interface {
+	DownloadContext(ctx context.Context, index int) (videoPath string, pfpPath string, floatingPfps []FloatingPfpFile, err error)
 }
 
 const (

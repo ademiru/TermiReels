@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +56,10 @@ type Settings struct {
 
 	KeysReactOpen  []string
 	KeysReactClose []string
+
+	KeysProfileOpen   []string
+	KeysProfileBack   []string
+	KeysProfileFollow []string
 }
 
 var Config Settings
@@ -259,8 +264,12 @@ func (b *ChromeBackend) SetVolume(vol float64) error {
 // from the instagram page context.
 // Returns nil for each failed URL
 func fetchURLsHTTP(urls []string) [][]byte {
-	var gifHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	return fetchURLsHTTPContext(context.Background(), urls)
+}
 
+var assetHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+func fetchURLsHTTPContext(ctx context.Context, urls []string) [][]byte {
 	if len(urls) == 0 {
 		return nil
 	}
@@ -273,7 +282,11 @@ func fetchURLsHTTP(urls []string) [][]byte {
 		wg.Add(1)
 		go func(i int, u string) {
 			defer wg.Done()
-			resp, err := gifHTTPClient.Get(u)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				return
+			}
+			resp, err := assetHTTPClient.Do(req)
 			if err != nil {
 				return
 			}
@@ -358,6 +371,16 @@ func (b *ChromeBackend) fetchURLsJS(urls []string) [][]byte {
 
 // Download downloads a reel video and profile picture to the cache directory
 func (b *ChromeBackend) Download(index int) (string, string, []FloatingPfpFile, error) {
+	return b.DownloadContext(context.Background(), index)
+}
+
+// DownloadContext is Download with cancellation support for speculative
+// prefetch. Files are only committed to the cache after every required video
+// byte has arrived successfully.
+func (b *ChromeBackend) DownloadContext(ctx context.Context, index int) (string, string, []FloatingPfpFile, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", nil, err
+	}
 	pk := b.activeCursor().PKAt(index)
 	if pk == "" {
 		return "", "", nil, fmt.Errorf("index out of range")
@@ -402,7 +425,11 @@ func (b *ChromeBackend) Download(index int) (string, string, []FloatingPfpFile, 
 	// check if in the progress of being downloaded
 	if ch, ok := inProgress[videoFile]; ok {
 		cacheMu.Unlock()
-		<-ch // Wait for the other download to complete
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return "", "", nil, ctx.Err()
+		}
 		if videoCache.has(videoFile) {
 			return videoFile, pfpFile, floatingPfpPaths, nil
 		}
@@ -438,7 +465,10 @@ func (b *ChromeBackend) Download(index int) (string, string, []FloatingPfpFile, 
 		floatingIdx = append(floatingIdx, i)
 	}
 
-	data := fetchURLsHTTP(urls)
+	data := fetchURLsHTTPContext(ctx, urls)
+	if err := ctx.Err(); err != nil {
+		return "", "", nil, err
+	}
 	if data[0] == nil {
 		return "", "", nil, fmt.Errorf("failed to download video")
 	}

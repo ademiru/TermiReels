@@ -274,14 +274,18 @@ func execGraphQL(req graphQLRequest) (string, error) {
 	return result, nil
 }
 
-// processReelResponse extracts reels from a GraphQL response. New PKs are
-// inserted into b.reels and appended to the feed cursor; map membership is
-// the dedup signal.
+// processReelResponse extracts reels from a GraphQL response. Reel storage is
+// global, but source membership is not: profile reels go only to the active
+// ProfileCursor and can never reorder or contaminate the main feed.
 func (b *ChromeBackend) processReelResponse(body string) {
 	var resp reelResponse
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return
 	}
+
+	b.modeMu.RLock()
+	profile := b.profile
+	b.modeMu.RUnlock()
 
 	for _, edge := range resp.Data.Connection.Edges {
 		media := edge.Node.Media
@@ -290,12 +294,17 @@ func (b *ChromeBackend) processReelResponse(body string) {
 		}
 
 		b.reelsMu.Lock()
-		if _, exists := b.reels[media.PK]; exists {
-			b.reelsMu.Unlock()
-			continue
+		if _, exists := b.reels[media.PK]; !exists {
+			b.reels[media.PK] = buildReel(media)
 		}
-		b.reels[media.PK] = buildReel(media)
-		b.feed.append(media.PK)
+		if profile == nil || !profile.capture(media.Code, media.PK) {
+			// The main feed is the only fallback destination. A profile
+			// payload whose code is not in its grid is recommendation context,
+			// not part of that creator's reel sequence.
+			if profile == nil && b.feed.indexOf(media.PK) == 0 {
+				b.feed.append(media.PK)
+			}
+		}
 		b.reelsMu.Unlock()
 	}
 }

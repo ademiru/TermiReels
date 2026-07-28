@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -35,12 +34,12 @@ func main() {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	configDir := filepath.Join(homeDir, ".config", "reels")
+	paths := resolveAppPaths(homeDir)
 
 	// The shortcut editor only touches reels.conf, so it skips the graphics
 	// probe, the browser and the player entirely and opens instantly.
 	if *shortcutFlag {
-		p := tea.NewProgram(tui.NewShortcutsModel(configDir), tea.WithAltScreen())
+		p := tea.NewProgram(tui.NewShortcutsModel(paths.configDir), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -61,19 +60,15 @@ func main() {
 	// to date. Must run before any child processes are spawned.
 
 	// Set up directories:
-	// Browser data: 	~/.local/share/reels/
-	// Logs:			~/.local/state/reels/
-	// Cache:			~/.cache/reels/
-	// Settings: 		~/.config/reels/
-	userDataDir := filepath.Join(homeDir, ".local", "share", "reels", "chrome-data")
-	logDir := filepath.Join(homeDir, ".local", "state", "reels")
-	cacheDir := filepath.Join(homeDir, ".cache", "reels")
-
+	// Browser data:	~/.local/share/termireels/
+	// Logs:		~/.local/state/termireels/
+	// Cache:		~/.cache/termireels/
+	// Settings:		~/.config/termireels/
 	// Create synchronized file wrapper for both Bubble Tea and video renderer
 	syncOut := &SyncFile{File: os.Stdout}
 
 	p := tea.NewProgram(
-		tui.NewModel(userDataDir, logDir, cacheDir, configDir, syncOut, Version, tui.Config{LoginMode: *loginFlag, HeadedMode: *headedFlag}),
+		tui.NewModel(paths.userDataDir, paths.logDir, paths.cacheDir, paths.configDir, syncOut, Version, tui.Config{LoginMode: *loginFlag, HeadedMode: *headedFlag}),
 		tea.WithAltScreen(),
 		// All-motion tracking, not just drag, so the status row can highlight
 		// the control under the pointer. updateMouse discards motion events

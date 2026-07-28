@@ -6,6 +6,7 @@ import (
 	"github.com/ademiru/TermiReels/backend"
 	"github.com/ademiru/TermiReels/player"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // updateMouse handles mouse input while browsing.
@@ -98,6 +99,20 @@ func (m Model) mouseScroll(direction int) (tea.Model, tea.Cmd) {
 
 // mouseClick dispatches a left click at 0-indexed cell (x, y).
 func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
+	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() && !m.profileBusy {
+		action := m.profileHeaderActionAt(x, y, profile.CreatorProfile())
+		switch action {
+		case "back":
+			m.profileBusy = true
+			m.player.Stop()
+			m.status = statusLoading
+			m.comments.Clear()
+			return m, m.exitCreatorProfile(profile)
+		case "follow":
+			m.profileBusy = true
+			return m, m.toggleCreatorFollow(profile)
+		}
+	}
 	if m.pointOnVolumeSlider(x, y) {
 		m.volumeDragging = true
 		return m.setVolumeFromX(x)
@@ -113,6 +128,16 @@ func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
 			return model, cmd
 		}
 	}
+	if m.pointOnCreator(x, y) {
+		if profile, ok := m.backend.(backend.ProfileBackend); ok && !profile.IsProfileMode() && !m.backend.IsChatMode() &&
+			m.currentReel != nil && !m.profileBusy {
+			m.profileBusy = true
+			m.player.Stop()
+			m.status = statusLoading
+			m.comments.Clear()
+			return m, m.enterCreatorProfile(profile, m.currentReel.Username)
+		}
+	}
 	if m.pointOnProgressBar(x, y) {
 		m.scrubbing = true
 		return m.scrubTo(x)
@@ -122,6 +147,26 @@ func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) profileHeaderActionAt(x, y int, state backend.CreatorProfileState) string {
+	row := max(m.videoRow-2, 0)
+	start := max(m.videoCol-1, 0)
+	if y != row || x < start {
+		return ""
+	}
+	header := buildProfileHeaderLayout(state, player.VideoWidthChars-1)
+	return header.actionAt(x - start)
+}
+
+func (m Model) pointOnCreator(x, y int) bool {
+	if m.currentReel == nil {
+		return false
+	}
+	row := m.videoRow - 1 + player.VideoHeightChars
+	start := m.videoCol - 1
+	end := start + pfpGutter + lipgloss.Width("@"+m.currentReel.Username) + 3
+	return y == row && x >= start && x < end
 }
 
 func (m Model) pointOnVolumeSlider(x, y int) bool {

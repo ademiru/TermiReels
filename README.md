@@ -78,6 +78,9 @@ Useful flags:
 | `s` / `S` | open share panel / send and close |
 | `d` / `D` | open / close reels shared in DMs |
 | `x` / `X` | open / close reactions in DM mode |
+| `u` | open the current creator's reels |
+| `f` | follow or unfollow the creator in profile mode |
+| `g` or `esc` | return from creator reels to the main feed |
 | `p` | pause |
 | `m` | mute |
 | `[` / `]` | volume down / up |
@@ -85,8 +88,10 @@ Useful flags:
 | `?` | help |
 | `q` or `ctrl+c` | quit |
 
-The footer, volume bar, reel progress bar, comment hearts and share panel also
-support mouse input. All keyboard bindings can be changed with:
+The footer, creator name, volume bar, reel progress bar, comment hearts and
+share panel also support mouse input. Creator reels use an independent cursor,
+so returning to the main feed restores the reel where you left it. All
+keyboard bindings can be changed with:
 
 ```bash
 ./termireels --shortcut
@@ -94,17 +99,17 @@ support mouse input. All keyboard bindings can be changed with:
 
 ## Data files
 
-TermiReels currently keeps compatibility with the original application's
-paths:
-
 ```text
-~/.config/reels/reels.conf
-~/.cache/reels/
-~/.local/share/reels/chrome-data/
-~/.local/state/reels/
+~/.config/termireels/reels.conf
+~/.cache/termireels/
+~/.local/share/termireels/chrome-data/
+~/.local/state/termireels/
 ```
 
-The configuration file is reloaded while the application is running.
+Legacy `reels` directories are moved on first start only when the corresponding
+TermiReels directory does not already exist. A failed move falls back to the
+legacy path without deleting or merging data. The configuration file is
+reloaded while the application is running.
 
 ## What this fork changes
 
