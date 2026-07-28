@@ -143,6 +143,9 @@ var confEntries = []confEntry{
 	keyEntry("key_friends_close", "", "close DMs / exit chat mode", func(s *Settings) *[]string { return &s.KeysChatsClose }),
 	keyEntry("key_react_open", "", "open react panel", func(s *Settings) *[]string { return &s.KeysReactOpen }),
 	keyEntry("key_react_close", "", "close react panel", func(s *Settings) *[]string { return &s.KeysReactClose }),
+	keyEntry("key_profile_open", "", "open creator reels", func(s *Settings) *[]string { return &s.KeysProfileOpen }),
+	keyEntry("key_profile_back", "", "return to main feed", func(s *Settings) *[]string { return &s.KeysProfileBack }),
+	keyEntry("key_profile_follow", "", "follow / unfollow creator", func(s *Settings) *[]string { return &s.KeysProfileFollow }),
 }
 
 const confHeader = "# insta reels TUI config"
@@ -278,6 +281,10 @@ func defaultSettings() Settings {
 
 		KeysReactOpen:  []string{"x"},
 		KeysReactClose: []string{"X"},
+
+		KeysProfileOpen:   []string{"u"},
+		KeysProfileBack:   []string{"g", "esc"},
+		KeysProfileFollow: []string{"f"},
 	}
 
 	if goruntime.GOOS == "darwin" {

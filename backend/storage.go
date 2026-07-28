@@ -56,6 +56,10 @@ type Settings struct {
 
 	KeysReactOpen  []string
 	KeysReactClose []string
+
+	KeysProfileOpen   []string
+	KeysProfileBack   []string
+	KeysProfileFollow []string
 }
 
 var Config Settings

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add isolated creator-Reels browsing, follow controls, clickable creator names, and reliable return to the previous main-feed position
 - Stop infinite silent playback restart loops, expose background failures, and track rendered/dropped frames, errors, and recoveries
 - Cancel stale reel prefetch requests immediately when navigation changes
 - Migrate legacy `reels` data directories to `termireels` with no-overwrite and safe fallback behavior

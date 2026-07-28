@@ -269,6 +269,14 @@ func (b *ChromeBackend) DiscoverNextReel(afterIndex int) (*ReelInfo, error) {
 	if b.IsChatMode() {
 		return nil, fmt.Errorf("cannot extend the feed while browsing a chat")
 	}
+	b.modeMu.RLock()
+	profile := b.profile
+	b.modeMu.RUnlock()
+	if profile != nil {
+		b.profileOpMu.Lock()
+		defer b.profileOpMu.Unlock()
+		return b.discoverNextProfileReel(profile, afterIndex)
+	}
 	if afterIndex < 1 {
 		return nil, fmt.Errorf("invalid feed index %d", afterIndex)
 	}
@@ -297,7 +305,12 @@ func (b *ChromeBackend) DiscoverNextReel(afterIndex int) (*ReelInfo, error) {
 // up-front because arrow-key scrolls don't trigger Instagram's auto-close.
 func (b *ChromeBackend) SyncTo(index int) error {
 	b.ClearComments()
-	return b.activeCursor().SyncTo(index)
+	cur := b.activeCursor()
+	if _, ok := cur.(*ProfileCursor); ok {
+		b.profileOpMu.Lock()
+		defer b.profileOpMu.Unlock()
+	}
+	return cur.SyncTo(index)
 }
 
 // IsSyncing returns true if the active cursor is mid-navigation.

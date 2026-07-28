@@ -31,20 +31,31 @@ type (
 		contextFloating []floatingItem // reel-context pfps from the download (repost/like/sent)
 		chatFloating    []floatingItem // chat-mode sender + reactor pfps
 	}
-	selfReactedMsg       struct{ index int }
-	musicTickMsg         struct{}
-	shareResetMsg        struct{}
-	shareSentMsg         struct{}
-	shareClosedMsg       struct{}
-	shareFailedMsg       struct{}
-	versionCheckMsg      struct{ latest string }
-	loadingMsgsMsg       struct{ messages []string }
-	loadingMsgTickMsg    struct{}
-	loadingScrollTickMsg struct{}
-	loadingFadeTickMsg   struct{}
-	configCheckMsg       struct{}
-	loginRestartedMsg    struct{ err error }
-	repostSpinMsg        struct{ gen int }
+	selfReactedMsg         struct{ index int }
+	musicTickMsg           struct{}
+	shareResetMsg          struct{}
+	shareSentMsg           struct{}
+	shareClosedMsg         struct{}
+	shareFailedMsg         struct{}
+	versionCheckMsg        struct{ latest string }
+	loadingMsgsMsg         struct{ messages []string }
+	loadingMsgTickMsg      struct{}
+	loadingScrollTickMsg   struct{}
+	loadingFadeTickMsg     struct{}
+	configCheckMsg         struct{}
+	loginRestartedMsg      struct{ err error }
+	repostSpinMsg          struct{ gen int }
+	profileEnteredMsg      struct{ info *backend.ReelInfo }
+	profileExitedMsg       struct{ info *backend.ReelInfo }
+	profileActionFailedMsg struct {
+		action string
+		err    error
+		info   *backend.ReelInfo
+	}
+	profileFollowedMsg struct {
+		following bool
+		err       error
+	}
 
 	// commentLikeFailedMsg rolls back an optimistic comment like that the page
 	// refused, so the UI never claims something the site didn't do
@@ -170,6 +181,10 @@ type Model struct {
 	// prefetchCancel stops downloads that belong to a reel the user has
 	// already navigated away from.
 	prefetchCancel context.CancelFunc
+
+	// profileBusy prevents rapid follow/back/navigation input from scheduling
+	// conflicting browser navigations before the previous one completes.
+	profileBusy bool
 
 	// repostSpin counts down the frames left in the repost icon's animation;
 	// repostGen discards ticks from a superseded animation
@@ -577,10 +592,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case reelLoadedMsg:
+		m.profileBusy = false
 		m.currentReel = msg.info
 		m.status = statusNone
 		m.marqueeOffset = 0
 		return m, m.startPlayback(msg.info.Index)
+
+	case profileEnteredMsg:
+		m.profileBusy = false
+		m.currentReel = msg.info
+		m.status = statusNone
+		m.comments.Clear()
+		m.marqueeOffset = 0
+		return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast("creator reels opened"))
+
+	case profileExitedMsg:
+		m.profileBusy = false
+		m.currentReel = msg.info
+		m.status = statusNone
+		m.comments.Clear()
+		m.marqueeOffset = 0
+		return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast("back to main feed"))
+
+	case profileActionFailedMsg:
+		m.profileBusy = false
+		m.status = statusNone
+		if msg.info != nil {
+			m.currentReel = msg.info
+			return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast(msg.action+" failed"))
+		}
+		return m, m.hud.ShowToast(msg.action + " failed")
+
+	case profileFollowedMsg:
+		m.profileBusy = false
+		if msg.err != nil {
+			return m, m.hud.ShowToast("follow action failed")
+		}
+		if msg.following {
+			return m, m.hud.ShowToast("following creator")
+		}
+		return m, m.hud.ShowToast("unfollowed creator")
 
 	case musicTickMsg:
 		// Advances for any reel, not just ones with music: a long caption
@@ -623,6 +674,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.queueShareReset(), m.hud.ShowToast(sentToast(m.shareCount)))
 
 	case reelErrorMsg:
+		m.profileBusy = false
 		m.status = statusReelError
 		return m, nil
 
@@ -639,6 +691,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.floating = append(slices.Clone(msg.contextFloating), msg.chatFloating...)
 		m.updateVideoPosition()
 		m.updateImages()
+		if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
+			if m.prefetchCancel != nil {
+				m.prefetchCancel()
+				m.prefetchCancel = nil
+			}
+			return m, nil
+		}
 		if m.prefetchCancel != nil {
 			m.prefetchCancel()
 		}

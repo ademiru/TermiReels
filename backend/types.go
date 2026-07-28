@@ -33,6 +33,13 @@ type ChromeBackend struct {
 	feed   *FeedCursor
 	active Cursor
 
+	// profile is a temporary, independent creator-reels source. The feed
+	// cursor and its position remain intact while it is active.
+	profile            *ProfileCursor
+	profileReturnIndex int
+	profileState       CreatorProfileState
+	profileOpMu        sync.Mutex
+
 	// dmCtx is the secondary chromedp window used for chat-mode navigation
 	// and DM-inbox collection. Created once by startDMSession after the feed
 	// is up; lives until Stop. Nil if the session never started.
