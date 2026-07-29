@@ -12,7 +12,7 @@ import (
 // (with the leading "v" stripped)
 func fetchLatestVersion() (string, bool) {
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/njyeung/reels/releases/latest")
+	resp, err := client.Get("https://api.github.com/repos/ademiru/TermiReels/releases/latest")
 	if err != nil {
 		return "", false
 	}
@@ -31,7 +31,7 @@ func fetchLatestVersion() (string, bool) {
 func releaseAssetName() (string, bool) {
 	switch runtime.GOOS + "/" + runtime.GOARCH {
 	case "linux/amd64":
-		return "reels-linux-amd64", true
+		return "termireels-linux-amd64-wsl.tar.gz", true
 	case "linux/arm64":
 		return "reels-linux-arm64", true
 	case "darwin/arm64":

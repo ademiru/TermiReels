@@ -113,9 +113,9 @@ func (b *ChromeBackend) prefetchReel(code, pk string) error {
 	if err := json.Unmarshal([]byte(result), &resp); err != nil {
 		return err
 	}
-	media := resp.Data.Connection.Edges[0].Node.Media
-	if media.PK == "" {
-		return fmt.Errorf("prefetchReel: empty media for %s", code)
+	media, ok := resp.mediaByCode(code)
+	if !ok {
+		return fmt.Errorf("prefetchReel: response did not contain %s", code)
 	}
 
 	// Key by the entry's PK (the shared reel's target_id, what the cursor

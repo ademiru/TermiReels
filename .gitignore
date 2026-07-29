@@ -4,3 +4,6 @@ reels
 tests/venv/
 tests/__pycache__/
 tests/harness/__pycache__/
+creator-provider/node_modules/
+creator-provider/dist/
+.build-cache/

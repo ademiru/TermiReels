@@ -31,21 +31,24 @@ type (
 		contextFloating []floatingItem // reel-context pfps from the download (repost/like/sent)
 		chatFloating    []floatingItem // chat-mode sender + reactor pfps
 	}
-	selfReactedMsg         struct{ index int }
-	musicTickMsg           struct{}
-	shareResetMsg          struct{}
-	shareSentMsg           struct{}
-	shareClosedMsg         struct{}
-	shareFailedMsg         struct{}
-	versionCheckMsg        struct{ latest string }
-	loadingMsgsMsg         struct{ messages []string }
-	loadingMsgTickMsg      struct{}
-	loadingScrollTickMsg   struct{}
-	loadingFadeTickMsg     struct{}
-	configCheckMsg         struct{}
-	loginRestartedMsg      struct{ err error }
-	repostSpinMsg          struct{ gen int }
-	profileEnteredMsg      struct{ info *backend.ReelInfo }
+	selfReactedMsg       struct{ index int }
+	musicTickMsg         struct{}
+	shareResetMsg        struct{}
+	shareSentMsg         struct{}
+	shareClosedMsg       struct{}
+	shareFailedMsg       struct{}
+	versionCheckMsg      struct{ latest string }
+	loadingMsgsMsg       struct{ messages []string }
+	loadingMsgTickMsg    struct{}
+	loadingScrollTickMsg struct{}
+	loadingFadeTickMsg   struct{}
+	configCheckMsg       struct{}
+	loginRestartedMsg    struct{ err error }
+	repostSpinMsg        struct{ gen int }
+	profileEnteredMsg    struct {
+		info       *backend.ReelInfo
+		generation uint64
+	}
 	profileExitedMsg       struct{ info *backend.ReelInfo }
 	profileActionFailedMsg struct {
 		action string
@@ -184,7 +187,8 @@ type Model struct {
 
 	// profileBusy prevents rapid follow/back/navigation input from scheduling
 	// conflicting browser navigations before the previous one completes.
-	profileBusy bool
+	profileBusy    bool
+	profileOpening bool
 
 	// repostSpin counts down the frames left in the repost icon's animation;
 	// repostGen discards ticks from a superseded animation
@@ -205,8 +209,11 @@ type Model struct {
 }
 
 type Config struct {
-	HeadedMode bool
-	LoginMode  bool
+	HeadedMode            bool
+	LoginMode             bool
+	CreatorProvider       bool
+	CreatorAudit          bool
+	CreatorProviderScript string
 }
 
 // NewModel creates a new TUI model
@@ -230,6 +237,11 @@ func NewModel(userDataDir, logDir, cacheDir, configDir string, output io.Writer,
 	p.SetRetinaScale(settings.RetinaScale)
 
 	b := backend.NewChromeBackend(userDataDir, cacheDir, configDir)
+	if flags.CreatorProvider && flags.CreatorProviderScript != "" {
+		b.EnableCreatorProvider(flags.CreatorProviderScript)
+	} else if flags.CreatorAudit && flags.CreatorProviderScript != "" {
+		b.EnableCreatorAudit(flags.CreatorProviderScript)
+	}
 
 	return Model{
 		state:         stateLoading,
@@ -294,6 +306,12 @@ func (m Model) startBackend() tea.Msg {
 
 	if needsLogin {
 		return loginRequiredMsg{}
+	}
+
+	if m.flags.CreatorProvider {
+		if warm, ok := m.backend.(backend.CreatorProviderWarmBackend); ok {
+			go warm.WarmCreatorProvider()
+		}
 	}
 
 	// if we don't need login, that means success
@@ -569,6 +587,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.comments.Clear()
 			m.hud.HideChatBanner()
 			return m, tea.Batch(m.loadCurrentReel, m.listenForEvents)
+		case backend.EventProfileReady:
+			if profile, ok := m.backend.(backend.ProfileBackend); ok &&
+				profile.IsProfileMode() &&
+				profile.CreatorProfile().Generation == msg.Generation {
+				m.player.Stop()
+				m.status = statusLoading
+				m.comments.Clear()
+				return m, tea.Batch(m.loadCurrentReel, m.listenForEvents)
+			}
+		case backend.EventCreatorFollowUpdated:
+			// State is read directly from the backend during render.
 		}
 		return m, m.listenForEvents
 
@@ -600,6 +629,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case profileEnteredMsg:
 		m.profileBusy = false
+		m.profileOpening = false
+		if profile, ok := m.backend.(backend.ProfileBackend); ok {
+			state := profile.CreatorProfile()
+			// Hydration can finish before this command result reaches the TUI.
+			// In that ordering, load the real first grid reel instead of
+			// overwriting it with the source reel again.
+			if state.Generation == msg.generation && !state.Loading {
+				m.player.Stop()
+				m.status = statusLoading
+				m.comments.Clear()
+				return m, tea.Batch(m.loadCurrentReel, m.hud.ShowToast("creator reels opened"))
+			}
+		}
 		m.currentReel = msg.info
 		m.status = statusNone
 		m.comments.Clear()
@@ -608,6 +650,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case profileExitedMsg:
 		m.profileBusy = false
+		m.profileOpening = false
 		m.currentReel = msg.info
 		m.status = statusNone
 		m.comments.Clear()
@@ -616,6 +659,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case profileActionFailedMsg:
 		m.profileBusy = false
+		m.profileOpening = false
+		m.lastErr = msg.err
 		m.status = statusNone
 		if msg.info != nil {
 			m.currentReel = msg.info
@@ -691,11 +736,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.floating = append(slices.Clone(msg.contextFloating), msg.chatFloating...)
 		m.updateVideoPosition()
 		m.updateImages()
+		if follow, ok := m.backend.(backend.CreatorFollowBackend); ok &&
+			m.currentReel != nil && !m.backend.IsChatMode() {
+			if _, known := follow.CreatorFollowState(m.currentReel.Username); !known {
+				go follow.RefreshCreatorFollow(m.currentReel.Username)
+			}
+		}
+		if m.flags.CreatorAudit && m.currentReel != nil {
+			if audit, ok := m.backend.(backend.CreatorAuditBackend); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+				go func(username string) {
+					defer cancel()
+					audit.AuditCreator(ctx, username)
+				}(m.currentReel.Username)
+			}
+		}
 		if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
 			if m.prefetchCancel != nil {
 				m.prefetchCancel()
-				m.prefetchCancel = nil
 			}
+			prefetchCtx, cancel := context.WithCancel(context.Background())
+			m.prefetchCancel = cancel
+			go profile.PreloadCreatorReels(prefetchCtx, msg.index, 3)
 			return m, nil
 		}
 		if m.prefetchCancel != nil {

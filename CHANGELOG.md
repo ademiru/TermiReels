@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+- Add a documented Windows 11 support path through WSL2 and WezTerm, including
+  a reproducible FFmpeg 8 Docker build helper and Windows-host clipboard
+  integration through `clip.exe`
+- Add a one-command PowerShell installer and a checksummed WSL release bundle
+  containing the FFmpeg-linked application, creator provider, Playwright
+  runtime and pinned Node.js runtime
+- Tune WSL transport by skipping impossible POSIX shared-memory probes,
+  capping fit-mode direct Kitty frames at 720p and routing ALSA through WSLg's
+  PulseAudio bridge without changing native Linux audio
+- Add an opt-in TypeScript/Playwright creator-Reels provider with a versioned
+  NDJSON protocol, supervised process lifetime, cancellation and strict Go
+  payload validation
+- Make creator-feed switching transactional: resolve and verify in an isolated
+  browser page, prepare a separate cursor, then atomically switch without
+  moving the main feed
+- Require creator-grid links and `target_user_id` API responses to agree before
+  admitting a shortcode, preserving verified collaborations while rejecting
+  recommendations
+- Resolve verified profile PKs through Instagram's authenticated read-only
+  media-info path before bounded exact-page fallback, avoiding slow serial
+  profile opens
+- Keep reel navigation responsive while a creator feed is being verified;
+  scrolling cancels the pending switch without touching the main cursor
+- Cache only complete verified creator snapshots for 60 seconds, giving rapid
+  reopen a fresh source identity without trusting partial or stale results
+- Warm the optional provider while the main feed starts and request only the
+  12 entries installed by protocol revision 1, reducing first-open latency
+  without weakening creator-grid or target-user verification
+- Add audit-only rollout, real-process supervisor tests, sidecar fixture tests
+  and Node verification to CI and release checks
+- Redesign startup as a full RGB brand stage with extruded 3D lettering, a running rainbow cat, shimmering status copy, responsive overflow protection, and professional offline messages
+- Fix creator-profile opening stalls with bounded navigation, direct GraphQL reel resolution, and one-hop restoration of the source reel on failure
+- Make creator browsing responsive with instant source-reel seeding, background profile hydration, isolated metadata resolution, three-reel preloading, and optimistic cached playback
+- Pin profile prefetches to immutable reel PKs and cancel them at source transitions so rapid enter/exit input cannot download from the wrong cursor
+- Isolate creator browsing in its own Chromium tab and route intercepted GraphQL responses by tab, keeping the main feed DOM, cursor, and lazy responses untouched
+- Replace the fragile one-shot profile-grid selector with bounded React polling, cumulative virtual-grid collection, visible sync/error state, and no-refresh consumption of newly hydrated reels
+- Switch the TUI into the hydrated creator grid automatically, preserving resolved PKs while installing Instagram's real profile order
+- Require exact shortcode matches when resolving profile and DM reels so the first recommendation edge can never masquerade as the requested video
 - Add isolated creator-Reels browsing, follow controls, clickable creator names, and reliable return to the previous main-feed position
 - Stop infinite silent playback restart loops, expose background failures, and track rendered/dropped frames, errors, and recoveries
 - Cancel stale reel prefetch requests immediately when navigation changes

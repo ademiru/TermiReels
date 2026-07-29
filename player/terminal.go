@@ -3,6 +3,7 @@ package player
 import (
 	"os"
 
+	"github.com/ademiru/TermiReels/internal/platformenv"
 	"golang.org/x/sys/unix"
 )
 
@@ -96,10 +97,27 @@ func FitVideoToTerminalArea(reservedRows, reservedCols, aspectW, aspectH int) (w
 		heightPx = widthPx * aspectH / aspectW
 	}
 
+	widthPx, heightPx = limitFitTransportSize(
+		widthPx, heightPx, aspectW, aspectH, platformenv.IsWSL(),
+	)
 	if widthPx < 1 || heightPx < 1 {
 		return 0, 0, false
 	}
 	return widthPx, heightPx, true
+}
+
+const wslFitMaxHeightPx = 720
+
+// limitFitTransportSize prevents fit mode from turning a large/HiDPI Windows
+// terminal into hundreds of megabytes per second of direct Kitty RGB traffic.
+// Fixed-size mode remains user-controlled and is intentionally not capped.
+func limitFitTransportSize(width, height, aspectW, aspectH int, wsl bool) (int, int) {
+	if !wsl || height <= wslFitMaxHeightPx || aspectW <= 0 || aspectH <= 0 {
+		return width, height
+	}
+	height = wslFitMaxHeightPx
+	width = height * aspectW / aspectH
+	return width, height
 }
 
 // GetTerminalSize returns terminal dimensions (cols, rows, widthPx, heightPx)

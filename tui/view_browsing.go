@@ -6,8 +6,6 @@ import (
 	"hash/fnv"
 	"math"
 	"math/rand/v2"
-	"os/exec"
-	goruntime "runtime"
 	"slices"
 	"strings"
 	"time"
@@ -50,31 +48,65 @@ func (m Model) viewBrowsing() string {
 	// HUD remains above the reel, but controls now live in a stable footer.
 	place(0, 0, m.viewHUD(videoWidthChars, videoY, strings.Repeat(" ", videoX)))
 	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
-		state := profile.CreatorProfile()
-		header := buildProfileHeaderLayout(state, videoWidthChars)
+		header := buildProfileHeaderLayout(profile.CreatorProfile(), videoWidthChars)
 		place(max(videoY-1, 0), videoX, header.render())
 	}
-
 	var statusContent string
 	for _, seg := range m.statusSegments() {
 		statusContent += seg.text
 	}
-	if m.status == statusLoading || m.comments.loading || m.backend.IsSyncing() {
+	if m.status == statusLoading || m.comments.loading || m.backend.IsSyncing() || m.profileOpening {
 		statusContent += "  " + m.spinner.View()
 	}
 	statusX := m.statusLineStart()
 
 	if m.currentReel != nil {
 		nameWidth := max(videoWidthChars-pfpGutter, 1)
+		var profileState *backend.CreatorProfileState
+		if follow, ok := m.backend.(backend.CreatorFollowBackend); ok && !m.backend.IsChatMode() {
+			followUsername := m.currentReel.Username
+			total := m.currentReel.Total
+			if profile, profileOK := m.backend.(backend.ProfileBackend); profileOK && profile.IsProfileMode() {
+				state := profile.CreatorProfile()
+				followUsername = state.Username
+				total = state.Total
+			}
+			following, known := follow.CreatorFollowState(followUsername)
+			state := backend.CreatorProfileState{
+				Username: followUsername, Following: following, Known: known, Total: total,
+			}
+			profileState = &state
+		}
+		usernameBudget := nameWidth
+		if profileState != nil {
+			usernameBudget = max(
+				nameWidth-lipgloss.Width(profileInlineFollowLabel(*profileState))-1,
+				1,
+			)
+		}
 		username := "@" + m.currentReel.Username
 		if m.currentReel.IsVerified {
-			username = truncateByWidth(username, max(nameWidth-2, 1))
-		} else if lipgloss.Width(username) > nameWidth {
-			username = truncateByWidth(username, max(nameWidth-1, 1)) + "…"
+			username = truncateByWidth(username, max(usernameBudget-2, 1))
+		} else if lipgloss.Width(username) > usernameBudget {
+			username = truncateByWidth(username, max(usernameBudget-1, 1)) + "…"
 		}
 		userLine := pink400.Bold(true).Render(username)
 		if m.currentReel.IsVerified {
 			userLine += " " + blue500.Render("✓")
+		}
+		if profileState != nil {
+			userLine += " " + renderProfileInlineFollow(*profileState)
+			if !m.compactViewport() {
+				counter := fmt.Sprintf(" %02d / %02d ", m.currentReel.Index, max(profileState.Total, m.currentReel.Total))
+				counterWidth := lipgloss.Width(counter)
+				if lipgloss.Width(userLine)+counterWidth+2 <= nameWidth {
+					userLine += "  " + lipgloss.NewStyle().
+						Foreground(colors.Purple100Color).
+						Background(colors.Purple900Color).
+						Bold(true).
+						Render(counter)
+				}
+			}
 		}
 		infoX := videoX + pfpGutter
 		infoY := videoY + videoHeightChars
@@ -278,30 +310,37 @@ func (m Model) updateBrowsing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	config := backend.GetSettings()
 	key := msg.String()
+	follow, followAvailable := m.backend.(backend.CreatorFollowBackend)
 	profile, profileAvailable := m.backend.(backend.ProfileBackend)
 
 	switch {
-	case profileAvailable && !m.profileBusy && profile.IsProfileMode() && slices.Contains(config.KeysProfileBack, key):
-		m.profileBusy = true
-		m.player.Stop()
-		m.status = statusLoading
-		m.comments.Clear()
+	case profileAvailable && (profile.IsProfileMode() || m.profileOpening) &&
+		slices.Contains(config.KeysProfileBack, key):
 		return m, m.exitCreatorProfile(profile)
 
-	case profileAvailable && !m.profileBusy && profile.IsProfileMode() && slices.Contains(config.KeysProfileFollow, key):
-		m.profileBusy = true
-		return m, m.toggleCreatorFollow(profile)
-
-	case profileAvailable && !m.profileBusy && !profile.IsProfileMode() && !m.backend.IsChatMode() &&
-		slices.Contains(config.KeysProfileOpen, key):
-		if m.currentReel == nil {
+	case followAvailable && !m.profileBusy && !m.profileOpening && !m.backend.IsChatMode() &&
+		slices.Contains(config.KeysProfileFollow, key):
+		if m.currentReel == nil || m.backend.IsSyncing() {
 			return m, nil
 		}
-		m.player.Stop()
+		username := m.currentReel.Username
+		if profileAvailable && profile.IsProfileMode() {
+			username = profile.CreatorProfile().Username
+		}
 		m.profileBusy = true
-		m.status = statusLoading
-		m.comments.Clear()
-		return m, m.enterCreatorProfile(profile, m.currentReel.Username)
+		return m, m.toggleCreatorFollowFor(follow, username)
+
+	case m.flags.CreatorProvider && profileAvailable && !profile.IsProfileMode() &&
+		!m.profileBusy && !m.profileOpening && !m.backend.IsChatMode() &&
+		slices.Contains(config.KeysProfileOpen, key):
+		if m.currentReel == nil || m.backend.IsSyncing() {
+			return m, nil
+		}
+		m.profileOpening = true
+		return m, tea.Batch(
+			m.enterCreatorProfile(profile, m.currentReel.Username),
+			m.hud.ShowToast("verifying creator reels"),
+		)
 
 	// Chats panel select takes priority over other keys
 	case m.chats.IsOpen() && slices.Contains(config.KeysSelect, key):
@@ -513,7 +552,9 @@ func (m Model) enterCreatorProfile(profile backend.ProfileBackend, username stri
 			current, _ := m.backend.GetCurrent()
 			return profileActionFailedMsg{action: "opening profile", err: err, info: current}
 		}
-		return profileEnteredMsg{info: info}
+		return profileEnteredMsg{
+			info: info, generation: profile.CreatorProfile().Generation,
+		}
 	}
 }
 
@@ -531,6 +572,13 @@ func (m Model) exitCreatorProfile(profile backend.ProfileBackend) tea.Cmd {
 func (m Model) toggleCreatorFollow(profile backend.ProfileBackend) tea.Cmd {
 	return func() tea.Msg {
 		following, err := profile.ToggleCreatorFollow()
+		return profileFollowedMsg{following: following, err: err}
+	}
+}
+
+func (m Model) toggleCreatorFollowFor(follow backend.CreatorFollowBackend, username string) tea.Cmd {
+	return func() tea.Msg {
+		following, err := follow.ToggleCreatorFollowFor(username)
 		return profileFollowedMsg{following: following, err: err}
 	}
 }
@@ -663,8 +711,21 @@ func (m *Model) closeShare() tea.Cmd {
 }
 
 func (m *Model) startPlayback(index int) tea.Cmd {
+	info, infoErr := m.backend.GetReel(index)
 	return func() tea.Msg {
-		videoPath, pfpPath, floatingFiles, err := m.backend.Download(index)
+		if infoErr != nil {
+			return videoErrorMsg{infoErr}
+		}
+		var videoPath, pfpPath string
+		var floatingFiles []backend.FloatingPfpFile
+		var err error
+		if pinned, ok := m.backend.(backend.PinnedDownloader); ok {
+			videoPath, pfpPath, floatingFiles, err = pinned.DownloadReelContext(
+				context.Background(), index, info.PK,
+			)
+		} else {
+			videoPath, pfpPath, floatingFiles, err = m.backend.Download(index)
+		}
 		if err != nil {
 			return videoErrorMsg{err}
 		}
@@ -817,6 +878,12 @@ func (m *Model) navigateToReel(direction int) tea.Cmd {
 	if m.currentReel == nil || m.status == statusLoading || m.profileBusy {
 		return nil
 	}
+	if m.profileOpening {
+		if profile, ok := m.backend.(backend.ProfileBackend); ok {
+			go func() { _, _ = profile.ExitCreatorProfile() }()
+		}
+		m.profileOpening = false
+	}
 	index := m.currentReel.Index + direction
 	if m.backend.IsChatMode() && direction > 0 && index > m.backend.GetTotal() {
 		m.player.Stop()
@@ -846,6 +913,14 @@ func (m *Model) navigateToReel(direction int) tea.Cmd {
 	m.status = statusLoading
 	m.comments.Clear()
 	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
+		// Resolved/profile-prefetched entries can begin playback immediately;
+		// browser DOM alignment continues asynchronously and guards mutations
+		// through IsSyncing. Only a cache miss needs the blocking resolver path.
+		if info, err := m.backend.GetReel(index); err == nil {
+			m.currentReel = info
+			go func() { _ = m.backend.SyncTo(index) }()
+			return m.startPlayback(index)
+		}
 		m.profileBusy = true
 		return func() tea.Msg {
 			if err := m.backend.SyncTo(index); err != nil {
@@ -1066,19 +1141,4 @@ func (m *Model) chatFloating(index int) []floatingItem {
 	}
 
 	return items
-}
-
-func copyToClipboard(text string) {
-	var cmd *exec.Cmd
-	if goruntime.GOOS == "darwin" {
-		cmd = exec.Command("pbcopy")
-	} else {
-		if _, err := exec.LookPath("wl-copy"); err == nil {
-			cmd = exec.Command("wl-copy")
-		} else {
-			cmd = exec.Command("xclip", "-selection", "clipboard")
-		}
-	}
-	cmd.Stdin = strings.NewReader(text)
-	cmd.Run()
 }

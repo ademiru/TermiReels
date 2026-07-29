@@ -10,11 +10,49 @@ permissions:
   contents: read
 
 jobs:
+  installer-syntax:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          [scriptblock]::Create(
+            [System.IO.File]::ReadAllText("scripts/install-windows.ps1")
+          ) | Out-Null
+
+  creator-provider:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: creator-provider
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: creator-provider/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type-check, build and test provider
+        run: npm test
+
   test:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Check shell installers
+        run: bash -n scripts/build-wsl.sh scripts/install-wsl-release.sh
 
       - uses: docker/setup-buildx-action@v4
 

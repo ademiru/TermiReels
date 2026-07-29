@@ -1,10 +1,7 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
-	"math/rand/v2"
-	"net/http"
 	"strings"
 	"time"
 
@@ -14,7 +11,14 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const loadingBarWidth = 34
+const loadingBarWidth = 36
+
+var loadingMessages = []string{
+	"Preparing your Reels session",
+	"Connecting the browser and player",
+	"Warming the local media cache",
+	"Synchronizing the Reels feed",
+}
 
 func (m Model) viewLoading() string {
 	if m.width == 0 || m.height == 0 {
@@ -36,7 +40,7 @@ func (m Model) viewLoading() string {
 		}
 	}
 
-	return renderLoadingScreen(m.width, m.height, barText, barStyle, m.loadingMsgScroll)
+	return renderLoadingScreen(m.width, m.height, m.version, barText, barStyle, m.loadingMsgScroll)
 }
 
 func (m Model) checkVersion() tea.Msg {
@@ -50,117 +54,221 @@ func (m Model) checkVersion() tea.Msg {
 	return versionCheckMsg{latest: latest}
 }
 
-func renderLoadingScreen(width, height int, barText string, barStyle lipgloss.Style, scrollOffset int) string {
-	logo := []string{
-		"____  _____  _____  _      ___",
-		"|  _ \\| ____|| ____|| |   / ___|",
-		"| |_) |  _|  |  _|  | |   \\ \\__ ",
-		"|  _ <| |___ | |___ | |__  ___ \\",
-		"|_| \\_\\_____||_____||____|/____/",
+func renderLoadingScreen(width, height int, version, status string, statusStyle lipgloss.Style, phase int) string {
+	if status == "" {
+		status = loadingMessages[0]
+		statusStyle = gray400
+	}
+	if width < 48 || height < 28 {
+		wordmark := gradientText("TERMIREELS", brandRamp, lipgloss.NewStyle().Bold(true))
+		line := renderLoadingWave(status, statusStyle, phase, max(min(width-4, loadingBarWidth), 8))
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center,
+			wordmark+"\n"+gray700.Render("REELS IN YOUR TERMINAL")+"\n\n"+line)
 	}
 
-	blockHeight := len(logo) + 2 // logo + blank line + bar
-	startRow := (height - blockHeight) / 2
-	barRow := startRow + len(logo) + 1
+	contentWidth := min(max(width-8, 40), 66)
+	title := renderLoadingLogo(contentWidth)
+	tagline := lipgloss.NewStyle().
+		Width(contentWidth).
+		Align(lipgloss.Center).
+		Bold(true).
+		Foreground(colors.Gray400Color).
+		Render("INSTAGRAM REELS  •  BUILT FOR THE TERMINAL")
 
-	var b strings.Builder
-	for y := range height {
-		var line string
-		switch {
-		case y >= startRow && y < startRow+len(logo):
-			text := logo[y-startRow]
-			pad := width - len(text)
-			if pad < 0 {
-				pad = 0
-				text = text[:width]
-			}
-			left := pad / 2
-			right := pad - left
-			line = strings.Repeat(" ", left) + pink400.Bold(true).Render(text) + strings.Repeat(" ", right)
+	runner := renderNyanRunner(contentWidth, phase)
+	message := renderLoadingWave(status, statusStyle, phase, contentWidth)
 
-		case y == barRow:
-			bar := renderLoadingBar(barText, barStyle, scrollOffset)
-			pad := width - loadingBarWidth
-			if pad < 0 {
-				pad = 0
-			}
-			left := pad / 2
-			right := pad - left
-			line = strings.Repeat(" ", left) + bar + strings.Repeat(" ", right)
-
-		default:
-			line = strings.Repeat(" ", width)
-		}
-		b.WriteString(line)
-		if y < height-1 {
-			b.WriteString("\n")
-		}
+	meta := "LOCAL CHROMIUM  •  KITTY GRAPHICS"
+	if version != "" && version != "dev" {
+		meta = "v" + version + "  •  " + meta
 	}
-	return b.String()
+	metaLine := lipgloss.NewStyle().
+		Width(contentWidth).
+		Align(lipgloss.Center).
+		Foreground(colors.Gray700Color).
+		Render(meta)
+
+	flare := lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(
+		orange400.Render("●") + gray800.Render(" ━━━━━ ") +
+			pink400.Render("●") + gray800.Render(" ━━━━━ ") +
+			purple400.Render("●") + gray800.Render(" ━━━━━ ") +
+			blue400.Render("●"),
+	)
+	body := strings.Join([]string{flare, "", title, "", tagline, "", runner, message, "", metaLine}, "\n")
+	card := lipgloss.NewStyle().
+		Width(contentWidth).
+		Padding(1, 3).
+		Border(lipgloss.DoubleBorder()).
+		BorderForeground(colors.Purple500Color).
+		Render(body)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, card)
 }
 
-func renderLoadingBar(text string, style lipgloss.Style, scrollOffset int) string {
-	textWidth := runewidth.StringWidth(text)
+func renderLoadingLogo(width int) string {
+	termi := []string{
+		"█████ █████ ████  █   █ █████",
+		"  █   █     █   █ ██ ██   █  ",
+		"  █   ████  ████  █ █ █   █  ",
+		"  █   █     █  █  █   █   █  ",
+		"  █   █████ █   █ █   █ █████",
+	}
+	reels := []string{
+		"████  █████ █████ █     █████",
+		"█   █ █     █     █     █    ",
+		"████  ████  ████  █     █████",
+		"█  █  █     █     █         █",
+		"█   █ █████ █████ █████ █████",
+	}
+	return render3DLoadingWord(termi, width, brandRamp) + "\n" +
+		render3DLoadingWord(reels, width, []rgb{brandRamp[3], brandRamp[2], brandRamp[1], brandRamp[0]})
+}
 
-	if textWidth <= loadingBarWidth {
-		// Center the text within the bar
-		pad := loadingBarWidth - textWidth
-		left := pad / 2
-		right := pad - left
-		return strings.Repeat(" ", left) +
-			style.Render(text) +
-			strings.Repeat(" ", right)
+func render3DLoadingWord(lines []string, width int, ramp []rgb) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	artWidth := 0
+	for _, line := range lines {
+		artWidth = max(artWidth, runewidth.StringWidth(line))
+	}
+	canvasWidth := artWidth + 2
+	canvas := make([][]string, len(lines)+1)
+	for y := range canvas {
+		canvas[y] = make([]string, canvasWidth)
+		for x := range canvas[y] {
+			canvas[y][x] = " "
+		}
 	}
 
-	// Marquee scroll: duplicate text with gap for seamless loop
-	gap := "   "
-	scrollText := text + gap + text
-	scrollRunes := []rune(scrollText)
-	loopLen := runewidth.StringWidth(text) + runewidth.StringWidth(gap)
-	offset := scrollOffset % loopLen
+	shadow := lipgloss.NewStyle().Foreground(colors.Purple900Color).Bold(true)
+	for y, line := range lines {
+		for x, r := range []rune(line) {
+			if r != ' ' && x+2 < canvasWidth {
+				canvas[y+1][x+2] = shadow.Render("▓")
+			}
+		}
+	}
+	for y, line := range lines {
+		for x, r := range []rune(line) {
+			if r == ' ' {
+				continue
+			}
+			t := 0.0
+			if artWidth > 1 {
+				t = float64(x) / float64(artWidth-1)
+			}
+			style := lipgloss.NewStyle().Foreground(gradientRamp(ramp, t).color()).Bold(true)
+			canvas[y][x] = style.Render(string(r))
+		}
+	}
 
-	// Walk runes to find the starting rune index for the scroll offset (in display columns)
-	startRune := 0
-	cols := 0
-	for i, r := range scrollRunes {
-		if cols >= offset {
-			startRune = i
+	out := make([]string, len(canvas))
+	for y, row := range canvas {
+		line := strings.Join(row, "")
+		out[y] = lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(line)
+	}
+	return strings.Join(out, "\n")
+}
+
+func renderNyanRunner(width, phase int) string {
+	if width < 1 {
+		return ""
+	}
+	const (
+		tailLength = 26
+		catWidth   = 7
+	)
+	cat := []string{" /\\_/\\ ", "( o.o )", " > ^ < "}
+	head := ((phase%(width+tailLength+catWidth))+width+tailLength+catWidth)%
+		(width+tailLength+catWidth) - catWidth
+
+	lines := make([]string, len(cat))
+	for row, catLine := range cat {
+		cells := make([]string, width)
+		for i := range cells {
+			cells[i] = " "
+		}
+		tailStart := max(head-tailLength, 0)
+		tailEnd := min(head, width)
+		for x := tailStart; x < tailEnd; x++ {
+			t := float64((x+phase+row*5)%tailLength) / float64(tailLength-1)
+			color := gradientRamp(brandRamp, t).color()
+			cells[x] = lipgloss.NewStyle().Foreground(color).Bold(true).Render("━")
+		}
+		for i, r := range catLine {
+			x := head + i
+			if x < 0 || x >= width {
+				continue
+			}
+			style := gray200.Bold(true)
+			if r == 'o' || r == '^' {
+				style = pink300.Bold(true)
+			}
+			cells[x] = style.Render(string(r))
+		}
+		lines[row] = strings.Join(cells, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderLoadingWave keeps the status copy physically stable while a bright
+// brand-colour crest travels through it from left to right. This produces a
+// shimmer without the layout jitter of moving the whole sentence.
+func renderLoadingWave(text string, base lipgloss.Style, phase, width int) string {
+	if width < 1 {
+		return ""
+	}
+	visible := marquee(text, width, 0)
+	textWidth := runewidth.StringWidth(visible)
+	if textWidth < width {
+		left := (width - textWidth) / 2
+		visible = strings.Repeat(" ", left) + visible +
+			strings.Repeat(" ", width-left-textWidth)
+	}
+
+	const waveRadius = 5
+	head := ((phase%(width+2*waveRadius))+width+2*waveRadius)%
+		(width+2*waveRadius) - waveRadius
+	var b strings.Builder
+	col := 0
+	for _, r := range visible {
+		runeWidth := max(runewidth.RuneWidth(r), 1)
+		center := col + runeWidth/2
+		distance := center - head
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance <= waveRadius {
+			t := float64(distance) / float64(waveRadius)
+			color := gradientRamp([]rgb{
+				brandRamp[1],
+				brandRamp[2],
+				brandRamp[3],
+				brandRamp[0],
+			}, t).color()
+			style := lipgloss.NewStyle().Foreground(color)
+			if distance <= 1 {
+				style = style.Bold(true)
+			}
+			b.WriteString(style.Render(string(r)))
+		} else {
+			b.WriteString(base.Render(string(r)))
+		}
+		col += runeWidth
+		if col >= width {
 			break
 		}
-		cols += runewidth.RuneWidth(r)
 	}
-
-	visible := truncateByWidth(string(scrollRunes[startRune:]), loadingBarWidth)
-
-	// Pad if visible is shorter than bar (near loop boundary)
-	visibleWidth := runewidth.StringWidth(visible)
-	if visibleWidth < loadingBarWidth {
-		visible += strings.Repeat(" ", loadingBarWidth-visibleWidth)
+	if col < width {
+		b.WriteString(strings.Repeat(" ", width-col))
 	}
-
-	return style.Render(visible)
+	return b.String()
 }
 
 // Loading data & tick functions
 
 func (m Model) fetchLoadingMessages() tea.Msg {
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("https://raw.githubusercontent.com/njyeung/reels/main/loading.json")
-	if err != nil {
-		return loadingMsgsMsg{}
-	}
-	defer resp.Body.Close()
-	var data struct {
-		Messages []string `json:"messages"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return loadingMsgsMsg{}
-	}
-	messages := data.Messages
-	rand.Shuffle(len(messages), func(i, j int) {
-		messages[i], messages[j] = messages[j], messages[i]
-	})
-	return loadingMsgsMsg{messages: messages}
+	return loadingMsgsMsg{messages: append([]string(nil), loadingMessages...)}
 }
 
 func (m Model) loadingMsgTick() tea.Cmd {

@@ -15,6 +15,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check shell installers
+        run: bash -n scripts/build-wsl.sh scripts/install-wsl-release.sh
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: creator-provider/package-lock.json
+
+      - name: Test creator provider
+        working-directory: creator-provider
+        run: |
+          npm ci
+          npm test
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Build FFmpeg test environment
@@ -36,12 +51,107 @@ jobs:
               go vet ./... &&
               go build -buildvcs=false -o /tmp/termireels .'
 
-  release-source:
+  build-wsl-release:
     needs: verify
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: creator-provider/package-lock.json
+
+      - name: Build creator provider runtime
+        working-directory: creator-provider
+        run: |
+          npm ci
+          npm run build
+          npm prune --omit=dev
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build FFmpeg release environment
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.build
+          load: true
+          tags: termireels-builder:release
+          cache-from: type=gha,scope=termireels-builder
+
+      - name: Assemble self-contained WSL package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_ROOT="${GITHUB_WORKSPACE}/dist/stage/termireels"
+          mkdir -p \
+            "${PACKAGE_ROOT}/creator-provider/dist" \
+            "${PACKAGE_ROOT}/creator-provider/node_modules" \
+            "${PACKAGE_ROOT}/runtime"
+
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/app" \
+            termireels-builder:release \
+            sh -c "go build -buildvcs=false -ldflags='-X main.Version=${VERSION}' -o /app/dist/stage/termireels/termireels ."
+
+          cp -R creator-provider/dist/. "${PACKAGE_ROOT}/creator-provider/dist/"
+          cp -R creator-provider/node_modules/playwright-core \
+            "${PACKAGE_ROOT}/creator-provider/node_modules/"
+          cp creator-provider/package.json creator-provider/package-lock.json \
+            "${PACKAGE_ROOT}/creator-provider/"
+          cp assets/asound-wsl.conf "${PACKAGE_ROOT}/runtime/"
+          find "${PACKAGE_ROOT}/creator-provider/dist" -name '*.test.js' -delete
+          printf '%s\n' "${VERSION}" > "${PACKAGE_ROOT}/VERSION"
+          cp LICENSE THIRD_PARTY_NOTICES.md README.md "${PACKAGE_ROOT}/"
+
+          NODE_VERSION="v$(node -p 'process.versions.node')"
+          NODE_ARCHIVE="node-${NODE_VERSION}-linux-x64.tar.xz"
+          curl --fail --location --silent --show-error \
+            "https://nodejs.org/dist/${NODE_VERSION}/${NODE_ARCHIVE}" \
+            --output "${RUNNER_TEMP}/${NODE_ARCHIVE}"
+          curl --fail --location --silent --show-error \
+            "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" \
+            --output "${RUNNER_TEMP}/SHASUMS256.txt"
+          (
+            cd "${RUNNER_TEMP}"
+            grep " ${NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check -
+          )
+          tar -xJf "${RUNNER_TEMP}/${NODE_ARCHIVE}" -C "${PACKAGE_ROOT}/runtime"
+          mv "${PACKAGE_ROOT}/runtime/node-${NODE_VERSION}-linux-x64" \
+            "${PACKAGE_ROOT}/runtime/node"
+
+          tar -C "${GITHUB_WORKSPACE}/dist/stage" -czf \
+            "${GITHUB_WORKSPACE}/dist/termireels-linux-amd64-wsl.tar.gz" \
+            termireels
+          (
+            cd "${GITHUB_WORKSPACE}/dist"
+            sha256sum termireels-linux-amd64-wsl.tar.gz \
+              > termireels-linux-amd64-wsl.tar.gz.sha256
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termireels-wsl-release
+          path: |
+            dist/termireels-linux-amd64-wsl.tar.gz
+            dist/termireels-linux-amd64-wsl.tar.gz.sha256
+          if-no-files-found: error
+
+  release-source:
+    needs:
+      - verify
+      - build-wsl-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: termireels-wsl-release
+          path: dist
 
       - name: Check release metadata
         run: |
@@ -77,7 +187,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish source release
+      - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
           files: |

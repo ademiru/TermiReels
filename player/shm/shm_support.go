@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/ademiru/TermiReels/internal/platformenv"
 	"golang.org/x/sys/unix"
 )
 
@@ -15,6 +16,12 @@ import (
 //
 // IMPORTANT: MUST BE CALLED BEFORE BUBBLETEA STARTS
 func ShmSupported() bool {
+	// A terminal hosted by Windows cannot open a POSIX shm name inside WSL.
+	// Skip the round-trip probe and use the protocol's direct transfer path.
+	if platformenv.IsWSL() {
+		return false
+	}
+
 	// On Linux, /dev/shm must exist for the filesystem-based approach.
 	if runtime.GOOS == "linux" {
 		info, err := os.Stat("/dev/shm")

@@ -35,10 +35,21 @@ type ChromeBackend struct {
 
 	// profile is a temporary, independent creator-reels source. The feed
 	// cursor and its position remain intact while it is active.
-	profile            *ProfileCursor
-	profileReturnIndex int
-	profileState       CreatorProfileState
-	profileOpMu        sync.Mutex
+	profile              *ProfileCursor
+	profileCtx           context.Context
+	profileCancel        context.CancelFunc
+	profileState         CreatorProfileState
+	profileOpMu          sync.Mutex
+	profileResolveMu     sync.Mutex
+	profileResolveCancel context.CancelFunc
+	creatorFollowMu      sync.RWMutex
+	creatorFollowing     map[string]bool
+	creatorKnown         map[string]bool
+	creatorProviderMu    sync.Mutex
+	creatorProvider      *CreatorProviderClient
+	creatorScript        string
+	creatorEnabled       bool
+	creatorAuditSeen     map[string]bool
 
 	// dmCtx is the secondary chromedp window used for chat-mode navigation
 	// and DM-inbox collection. Created once by startDMSession after the feed
@@ -219,6 +230,12 @@ type ContextDownloader interface {
 	DownloadContext(ctx context.Context, index int) (videoPath string, pfpPath string, floatingPfps []FloatingPfpFile, err error)
 }
 
+// PinnedDownloader keeps an asynchronous download bound to one reel even if
+// the active feed changes before the command executes.
+type PinnedDownloader interface {
+	DownloadReelContext(ctx context.Context, index int, pk string) (videoPath string, pfpPath string, floatingPfps []FloatingPfpFile, err error)
+}
+
 const (
 	// MaxRetries is the maximum number of scroll/retry attempts for sync operations
 	MaxRetries = 30
@@ -334,10 +351,13 @@ const (
 	EventError
 	EventDMReelsReady
 	EventChatModeExited
+	EventProfileReady
+	EventCreatorFollowUpdated
 )
 
 // Event is sent from backend to frontend
 type Event struct {
-	Type  EventType
-	Count int
+	Type       EventType
+	Count      int
+	Generation uint64
 }
