@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-29
+
 - Add a documented Windows 11 support path through WSL2 and WezTerm, including
   a reproducible FFmpeg 8 Docker build helper and Windows-host clipboard
   integration through `clip.exe`
