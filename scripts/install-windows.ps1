@@ -13,6 +13,100 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Test-WezTermInstalled {
+    if ((Get-Command wezterm.exe -ErrorAction SilentlyContinue) -or
+        (Get-Command wezterm-gui.exe -ErrorAction SilentlyContinue)) {
+        return $true
+    }
+
+    $executables = @(
+        (Join-Path $env:ProgramFiles "WezTerm\wezterm-gui.exe"),
+        (Join-Path $env:ProgramFiles "WezTerm\wezterm.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\WezTerm\wezterm-gui.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\WezTerm\wezterm.exe")
+    )
+    if ($executables | Where-Object { Test-Path -LiteralPath $_ }) {
+        return $true
+    }
+
+    $uninstallKeys = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    $installed = Get-ItemProperty -Path $uninstallKeys -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -like "WezTerm*" } |
+        Select-Object -First 1
+    return $null -ne $installed
+}
+
+function Install-WezTermFromRelease {
+    Write-Host "Installing WezTerm from its verified official release..." -ForegroundColor Cyan
+
+    [Net.ServicePointManager]::SecurityProtocol = `
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $headers = @{
+        "Accept" = "application/vnd.github+json"
+        "User-Agent" = "TermiReels-Windows-Installer"
+    }
+    $release = Invoke-RestMethod `
+        -Uri "https://api.github.com/repos/wezterm/wezterm/releases/latest" `
+        -Headers $headers
+    $installerAsset = $release.assets |
+        Where-Object { $_.name -match "^WezTerm-.+-setup\.exe$" } |
+        Select-Object -First 1
+    if (-not $installerAsset) {
+        throw "The official WezTerm release does not contain a Windows setup executable."
+    }
+    $checksumName = "$($installerAsset.name).sha256"
+    $checksumAsset = $release.assets |
+        Where-Object { $_.name -eq $checksumName } |
+        Select-Object -First 1
+    if (-not $checksumAsset) {
+        throw "The official WezTerm release does not contain $checksumName."
+    }
+
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) `
+        ("termireels-wezterm-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempRoot | Out-Null
+    try {
+        $installerPath = Join-Path $tempRoot $installerAsset.name
+        $checksumPath = Join-Path $tempRoot $checksumAsset.name
+        Invoke-WebRequest -UseBasicParsing `
+            -Uri $installerAsset.browser_download_url -OutFile $installerPath
+        Invoke-WebRequest -UseBasicParsing `
+            -Uri $checksumAsset.browser_download_url -OutFile $checksumPath
+
+        $checksumMatch = [Regex]::Match(
+            (Get-Content -LiteralPath $checksumPath -Raw),
+            "(?i)\b[0-9a-f]{64}\b"
+        )
+        if (-not $checksumMatch.Success) {
+            throw "The official WezTerm checksum file is invalid."
+        }
+        $expectedHash = $checksumMatch.Value.ToLowerInvariant()
+        $actualHash = (
+            Get-FileHash -LiteralPath $installerPath -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            throw "The downloaded WezTerm installer failed SHA-256 verification."
+        }
+
+        $process = Start-Process -FilePath $installerPath -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-"
+        ) -Wait -PassThru
+        if ($process.ExitCode -notin @(0, 3010)) {
+            throw "The verified WezTerm installer failed with exit code $($process.ExitCode)."
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not (Test-Administrator)) {
     if (-not $PSCommandPath) {
         throw "Download this installer to a file before running it."
@@ -28,15 +122,49 @@ if (-not (Test-Administrator)) {
     exit
 }
 
-if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-    throw "winget is required. Install Microsoft App Installer, then run this installer again."
+if (Test-WezTermInstalled) {
+    Write-Host "WezTerm is already installed." -ForegroundColor Green
 }
+else {
+    $installedWithWinget = $false
+    if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
+        Write-Host "Refreshing the WinGet community source..." -ForegroundColor Cyan
+        & winget.exe source update --name winget
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "WinGet source update failed; resetting the default source."
+            & winget.exe source reset --name winget --force
+            if ($LASTEXITCODE -eq 0) {
+                & winget.exe source update --name winget
+            }
+        }
 
-Write-Host "Installing WezTerm..." -ForegroundColor Cyan
-& winget.exe install --id Wez.WezTerm --exact --silent `
-    --accept-package-agreements --accept-source-agreements
-if ($LASTEXITCODE -ne 0) {
-    throw "WezTerm installation failed with exit code $LASTEXITCODE."
+        & winget.exe show --id wez.wezterm --exact --source winget `
+            --accept-source-agreements
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Installing WezTerm with WinGet..." -ForegroundColor Cyan
+            & winget.exe install --id wez.wezterm --exact --source winget --silent `
+                --accept-package-agreements --accept-source-agreements
+            $installedWithWinget = $LASTEXITCODE -eq 0
+            if (-not $installedWithWinget) {
+                Write-Warning `
+                    "WinGet installation failed with exit code $LASTEXITCODE; using the verified fallback."
+            }
+        }
+        else {
+            Write-Warning `
+                "WinGet could not resolve wez.wezterm; using the verified fallback."
+        }
+    }
+    else {
+        Write-Warning "WinGet is unavailable; using the verified fallback."
+    }
+
+    if (-not $installedWithWinget) {
+        Install-WezTermFromRelease
+    }
+    if (-not (Test-WezTermInstalled)) {
+        throw "WezTerm installation completed but the application could not be detected."
+    }
 }
 
 $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Fix the Windows bootstrapper's case-sensitive WezTerm package lookup, refresh
+  or repair the WinGet community source before retrying, and fall back to the
+  official WezTerm installer only after verifying its published SHA-256 hash
+
 ## [1.5.0] - 2026-07-29
 
 - Add a documented Windows 11 support path through WSL2 and WezTerm, including

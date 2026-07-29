@@ -16,12 +16,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Parse PowerShell installer
+      - name: Parse and verify PowerShell installer
         shell: pwsh
         run: |
-          [scriptblock]::Create(
-            [System.IO.File]::ReadAllText("scripts/install-windows.ps1")
-          ) | Out-Null
+          $content = [System.IO.File]::ReadAllText(
+            "scripts/install-windows.ps1"
+          )
+          [scriptblock]::Create($content) | Out-Null
+          if ($content -cnotmatch "--id wez\.wezterm") {
+            throw "Installer must use the canonical wez.wezterm package id."
+          }
+          if ($content -cmatch "--id Wez\.WezTerm") {
+            throw "Installer contains the broken mixed-case package id."
+          }
+          foreach ($required in @(
+            "winget.exe source update --name winget",
+            "Install-WezTermFromRelease",
+            "Get-FileHash",
+            "SHA256"
+          )) {
+            if (-not $content.Contains($required)) {
+              throw "Installer is missing required fallback marker: $required"
+            }
+          }
 
   creator-provider:
     runs-on: ubuntu-latest
