@@ -22,9 +22,13 @@ Open PowerShell and run:
 $p="$env:TEMP\install-termireels.ps1"; irm https://raw.githubusercontent.com/ademiru/TermiReels/main/scripts/install-windows.ps1 -OutFile $p; powershell -ExecutionPolicy Bypass -File $p
 ```
 
-The installer requests administrator permission, installs WezTerm through
-`winget`, installs or configures Ubuntu as WSL2, and then downloads the latest
-TermiReels release. A fresh WSL installation can require one Windows restart;
+The installer requests administrator permission, installs WezTerm, installs or
+configures Ubuntu as WSL2, and then downloads the latest TermiReels release.
+It first refreshes WinGet's community source and resolves the canonical
+`wez.wezterm` package. If WinGet is missing, stale or unable to resolve that
+package, the installer downloads WezTerm's official Windows setup executable
+and matching checksum from the project's GitHub release, verifies SHA-256 and
+only then runs it. A fresh WSL installation can require one Windows restart;
 run the same command again afterward. Ubuntu also asks for a Linux username
 and password on its first launch.
 
