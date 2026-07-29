@@ -1,24 +1,15 @@
-<p align="center">
-  🟥 T &nbsp; 🟧 E &nbsp; 🟨 R &nbsp; 🟩 M &nbsp; 🟦 I &nbsp;
-  🟪 R &nbsp; 🩷 E &nbsp; 🟧 E &nbsp; 🟨 L &nbsp; 🟩 S
-</p>
+<p align="center">🔴 ━━━ 🟠 ━━━ 🟡 ━━━ 🟢 ━━━ 🔵 ━━━ 🟣</p>
 
 ```text
-╭────────────────────────────────────────────────────────────────────╮
-│                                                                    │
-│  █████ █████ ████  █   █ █████ ████  █████ █████ █     █████     │
-│    █   █     █   █ ██ ██   █   █   █ █     █     █     █         │
-│    █   ████  ████  █ █ █   █   ████  ████  ████  █     █████     │
-│    █   █     █  █  █   █   █   █  █  █     █     █         █     │
-│    █   █████ █   █ █   █ █████ █   █ █████ █████ █████ █████     │
-│                                                                    │
-│  INSTAGRAM REELS // KITTY GRAPHICS // LOCAL CHROMIUM // GO TUI    │
-╰────────────────────────────────────────────────────────────────────╯
+TTTTT EEEEE RRRR  M   M IIIII RRRR  EEEEE EEEEE L      SSSS
+  T   E     R   R MM MM   I   R   R E     E     L     S
+  T   EEEE  RRRR  M M M   I   RRRR  EEEE  EEEE  L      SSS
+  T   E     R R   M   M   I   R R   E     E     L         S
+  T   EEEEE R  RR M   M IIIII R  RR EEEEE EEEEE LLLLL SSSS
 ```
 
 <p align="center">
-  🟥 PLAYBACK &nbsp;·&nbsp; 🟧 SOCIAL &nbsp;·&nbsp; 🟨 COMMENTS
-  &nbsp;·&nbsp; 🟩 CREATOR FEEDS &nbsp;·&nbsp; 🟦 WSL2 &nbsp;·&nbsp; 🟪 TUI
+  <code>INSTAGRAM REELS // KITTY GRAPHICS // LOCAL CHROMIUM // GO TUI</code>
 </p>
 
 TermiReels is a keyboard-first Instagram Reels client that plays inside a
@@ -34,7 +25,7 @@ draws each frame through the Kitty graphics protocol.
 > This is an unofficial project. It is not affiliated with Instagram or Meta,
 > and Instagram frontend changes can require client updates.
 
-## 🟥 Start here
+## Start here
 
 ### Windows 11 + WSL2
 
@@ -97,7 +88,7 @@ WezTerm, iTerm2, Konsole and compatible `st` builds are suitable. Many IDE
 terminals and nested multiplexers do not forward the necessary escape
 sequences.
 
-## 🟧 What is different here?
+## What is different here?
 
 TermiReels is not a rename-only fork. Its current runtime adds:
 
@@ -112,7 +103,7 @@ TermiReels is not a rename-only fork. Its current runtime adds:
 - verified creator feeds that never silently mix in recommendations;
 - dedicated WSL2 transport, clipboard and WSLg audio handling.
 
-## 🟨 Daily controls
+## Daily controls
 
 | Input | Result | Input | Result |
 |:---:|---|:---:|---|
@@ -135,7 +126,7 @@ Bindings are editable:
 termireels --shortcut
 ```
 
-## 🟩 Feed guarantees
+## Feed guarantees
 
 Opening a creator feed is treated as a transaction, not a blind page jump:
 
@@ -160,7 +151,7 @@ creator transition is pending keeps the main feed responsive and discards the
 stale transition. Only complete, verified snapshots enter the short-lived
 creator cache.
 
-## 🟦 Runtime map
+## Runtime map
 
 ```text
 Instagram Web
@@ -175,7 +166,7 @@ feed capture ──▶ cursor coordinator ──▶ FFmpeg ──▶ Kitty frame
 The browser profile stays local. TermiReels never asks you to type your
 Instagram password into the TUI.
 
-## 🟪 Command-line options
+## Command-line options
 
 ```text
 --login                open Chromium for authentication
@@ -187,7 +178,7 @@ Instagram password into the TUI.
 --version              print the build version
 ```
 
-## 🩷 Files on disk
+## Files on disk
 
 ```text
 ~/.config/termireels/reels.conf             settings
@@ -200,7 +191,7 @@ An older `reels` directory is migrated only when the matching TermiReels
 location is unused. Migration never merges or overwrites two existing data
 trees. Settings are reloaded while the application runs.
 
-## 🟧 Verification
+## Verification
 
 Pull requests exercise the Go code, race detector, `go vet`, production build,
 creator-provider suite, and Windows/Bash installer syntax. To run the core
@@ -216,7 +207,7 @@ go build -buildvcs=false -o termireels .
 Release tags additionally rebuild the FFmpeg environment and produce a
 checksummed, self-contained Linux/WSL x86-64 archive.
 
-## 🟨 Known boundaries
+## Known boundaries
 
 - A real Instagram login and local Chromium profile are required.
 - Instagram can change undocumented page structures and endpoints.
@@ -225,7 +216,7 @@ checksummed, self-contained Linux/WSL x86-64 archive.
 - Creator mode currently admits the first 12 verified entries; it stops there
   instead of filling the cursor with unrelated recommendations.
 
-## 🟩 Project history and license
+## Project history and license
 
 TermiReels began as a modification of
 [njyeung/reels](https://github.com/njyeung/reels). The original copyright
@@ -243,4 +234,4 @@ Twemoji assets have separate CC BY 4.0 terms. Redistribution details are in
 └────────────────────────────────────────────────────────────────┘
 ```
 
-<p align="center">🟥 LOCAL AUTH &nbsp;·&nbsp; 🟩 DIRECT RENDER &nbsp;·&nbsp; 🟦 YOUR TERMINAL &nbsp;·&nbsp; 🟪 YOUR CONTROL</p>
+<p align="center">🔴 ━━━ 🟠 ━━━ 🟡 ━━━ 🟢 ━━━ 🔵 ━━━ 🟣</p>
