@@ -134,12 +134,12 @@ func TestProfileCursorInstallsRealGridOrder(t *testing.T) {
 	if got := pc.installGrid([]string{"newest", "source", "older"}); got != 3 {
 		t.Fatalf("installGrid total = %d, want 3", got)
 	}
-	index, _, err := pc.Current()
-	if err == nil {
-		t.Fatal("unresolved first grid reel unexpectedly current")
+	index, pk, err := pc.Current()
+	if err != nil {
+		t.Fatalf("current source after reordered grid: %v", err)
 	}
-	if index != 0 {
-		t.Fatalf("unresolved Current index = %d, want 0", index)
+	if index != 2 || pk != "99" {
+		t.Fatalf("current identity after reorder = (%d, %q), want (2, 99)", index, pk)
 	}
 	if got := pc.PKAt(2); got != "99" {
 		t.Fatalf("source PK moved without identity: got %q, want 99", got)

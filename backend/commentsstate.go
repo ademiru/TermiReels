@@ -29,6 +29,7 @@ func (cs *CommentsState) Clear() {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.reelPK = ""
+	cs.fetching = false
 }
 
 // StartFetch marks pagination as in-progress. Returns false if already fetching.

@@ -100,33 +100,41 @@ func (m Model) mouseScroll(direction int) (tea.Model, tea.Cmd) {
 // mouseClick dispatches a left click at 0-indexed cell (x, y).
 func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
 	profile, profileAvailable := m.backend.(backend.ProfileBackend)
-	if profileAvailable && profile.IsProfileMode() && !m.profileBusy {
+	if profileAvailable && profile.IsProfileMode() && !m.profileBusy && !m.profileClosing {
 		state := profile.CreatorProfile()
 		if m.profileHeaderActionAt(x, y, state) == "back" {
 			m.profileBusy = true
-			return m, m.exitCreatorProfile(profile)
+			m.profileClosing = true
+			m.profileTarget = ""
+			m.profileRequest++
+			m.stopPlaybackForTransition()
+			m.comments.Clear()
+			return m, m.exitCreatorProfile(profile, m.profileRequest)
 		}
 	}
 	if follow, ok := m.backend.(backend.CreatorFollowBackend); ok &&
-		m.currentReel != nil && !m.backend.IsChatMode() && !m.profileBusy && !m.profileOpening {
+		m.currentReel != nil && !m.backend.IsChatMode() && !m.profileBusy &&
+		!m.profileOpening && !m.profileClosing {
 		username := m.currentReel.Username
-		if profileAvailable && profile.IsProfileMode() {
-			username = profile.CreatorProfile().Username
-		}
 		following, known := follow.CreatorFollowState(username)
 		state := backend.CreatorProfileState{Following: following, Known: known}
 		if m.profileInlineActionAt(x, y, state) == "follow" {
 			m.profileBusy = true
-			return m, m.toggleCreatorFollowFor(follow, username)
+			m.followTarget = username
+			m.followRequest++
+			return m, m.toggleCreatorFollowFor(follow, username, m.followRequest)
 		}
 	}
 	if m.flags.CreatorProvider && profileAvailable && !profile.IsProfileMode() &&
-		m.currentReel != nil && !m.backend.IsChatMode() && !m.profileBusy && !m.profileOpening &&
+		m.currentReel != nil && !m.backend.IsChatMode() && !m.profileBusy &&
+		!m.profileOpening && !m.profileClosing &&
 		m.pointOnCreator(x, y) {
 		m.profileOpening = true
+		m.profileTarget = m.currentReel.Username
+		m.profileRequest++
 		return m, tea.Batch(
-			m.enterCreatorProfile(profile, m.currentReel.Username),
-			m.hud.ShowToast("verifying creator reels"),
+			m.enterCreatorProfile(profile, m.currentReel.Username, m.profileRequest),
+			m.hud.ShowToast("preparing creator feed"),
 		)
 	}
 	if m.pointOnVolumeSlider(x, y) {

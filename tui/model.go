@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ademiru/TermiReels/backend"
@@ -15,18 +16,32 @@ import (
 
 // Messages
 type (
-	backendReadyMsg   struct{}
-	backendErrorMsg   struct{ err error }
-	loginRequiredMsg  struct{}
-	loginSuccessMsg   struct{}
-	reelLoadedMsg     struct{ info *backend.ReelInfo }
-	reelErrorMsg      struct{ err error }
+	backendReadyMsg  struct{}
+	backendErrorMsg  struct{ err error }
+	loginRequiredMsg struct{}
+	loginSuccessMsg  struct{}
+	reelLoadedMsg    struct {
+		info       *backend.ReelInfo
+		generation uint64
+	}
+	reelErrorMsg struct {
+		err        error
+		generation uint64
+	}
 	feedMoreFailedMsg struct{}
 	backendEventMsg   backend.Event
 	playbackEventMsg  player.PlaybackEvent
-	videoErrorMsg     struct{ err error }
-	videoReadyMsg     struct {
+	videoErrorMsg     struct {
+		err        error
+		generation uint64
+		pk         string
+		code       string
+	}
+	videoReadyMsg struct {
 		index           int
+		generation      uint64
+		pk              string
+		code            string
 		pfp             *player.Img
 		contextFloating []floatingItem // reel-context pfps from the download (repost/like/sent)
 		chatFloating    []floatingItem // chat-mode sender + reactor pfps
@@ -48,16 +63,23 @@ type (
 	profileEnteredMsg    struct {
 		info       *backend.ReelInfo
 		generation uint64
+		request    uint64
 	}
-	profileExitedMsg       struct{ info *backend.ReelInfo }
+	profileExitedMsg struct {
+		info    *backend.ReelInfo
+		request uint64
+	}
 	profileActionFailedMsg struct {
-		action string
-		err    error
-		info   *backend.ReelInfo
+		action  string
+		err     error
+		info    *backend.ReelInfo
+		request uint64
 	}
 	profileFollowedMsg struct {
+		username  string
 		following bool
 		err       error
+		request   uint64
 	}
 
 	// commentLikeFailedMsg rolls back an optimistic comment like that the page
@@ -189,6 +211,16 @@ type Model struct {
 	// conflicting browser navigations before the previous one completes.
 	profileBusy    bool
 	profileOpening bool
+	profileClosing bool
+	profileTarget  string
+	profileRequest uint64
+	followTarget   string
+	followRequest  uint64
+
+	// playbackGate prevents an older asynchronous download from pairing its
+	// video or images with the metadata of a newer reel.
+	playbackGate *playbackGate
+	reelLoadGate *playbackGate
 
 	// repostSpin counts down the frames left in the repost icon's animation;
 	// repostGen discards ticks from a superseded animation
@@ -260,6 +292,8 @@ func NewModel(userDataDir, logDir, cacheDir, configDir string, output io.Writer,
 		showNavbar:    settings.ShowNavbar,
 		configDir:     configDir,
 		version:       version,
+		playbackGate:  &playbackGate{},
+		reelLoadGate:  &playbackGate{},
 	}
 }
 
@@ -338,12 +372,18 @@ func (m Model) listenForPlaybackEvents() tea.Msg {
 	return playbackEventMsg(<-m.player.Events())
 }
 
-func (m Model) loadCurrentReel() tea.Msg {
-	info, err := m.backend.GetCurrent()
-	if err != nil {
-		return reelErrorMsg{err}
+func (m *Model) requestCurrentReel() tea.Cmd {
+	if m.reelLoadGate == nil {
+		m.reelLoadGate = &playbackGate{}
 	}
-	return reelLoadedMsg{info}
+	generation := m.reelLoadGate.next()
+	return func() tea.Msg {
+		info, err := m.backend.GetCurrent()
+		if err != nil {
+			return reelErrorMsg{err: err, generation: generation}
+		}
+		return reelLoadedMsg{info: info, generation: generation}
+	}
 }
 
 // restartHeaded closes the headless browser and reopens it visibly, so the
@@ -508,7 +548,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateBrowsing
 		m.status = statusLoading
 		return m, tea.Batch(
-			m.loadCurrentReel,
+			m.requestCurrentReel(),
 			m.listenForEvents,
 			m.musicTick(),
 		)
@@ -566,9 +606,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Refresh currentReel to get the newly persisted comments
 			if m.currentReel != nil {
 				if info, err := m.backend.GetReel(m.currentReel.Index); err == nil {
-					m.currentReel = info
-					m.comments.SetComments(info.PK, info.Comments)
-					m.updateCommentGifs()
+					// Indexes overlap between feed modes. A delayed comments
+					// event must not replace the visible reel's owner metadata.
+					if info.PK == m.currentReel.PK && info.Code == m.currentReel.Code {
+						m.currentReel = info
+						m.comments.SetComments(info.PK, info.Comments)
+						m.updateCommentGifs()
+					}
 				}
 			}
 		case backend.EventShareFriendsLoaded:
@@ -582,19 +626,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.hud.ShowDMNotify(msg.Count), m.listenForEvents)
 			}
 		case backend.EventChatModeExited:
-			m.player.Stop()
-			m.status = statusLoading
+			m.stopPlaybackForTransition()
 			m.comments.Clear()
 			m.hud.HideChatBanner()
-			return m, tea.Batch(m.loadCurrentReel, m.listenForEvents)
+			return m, tea.Batch(m.requestCurrentReel(), m.listenForEvents)
 		case backend.EventProfileReady:
 			if profile, ok := m.backend.(backend.ProfileBackend); ok &&
 				profile.IsProfileMode() &&
 				profile.CreatorProfile().Generation == msg.Generation {
-				m.player.Stop()
-				m.status = statusLoading
+				m.stopPlaybackForTransition()
 				m.comments.Clear()
-				return m, tea.Batch(m.loadCurrentReel, m.listenForEvents)
+				return m, tea.Batch(m.requestCurrentReel(), m.listenForEvents)
 			}
 		case backend.EventCreatorFollowUpdated:
 			// State is read directly from the backend during render.
@@ -621,57 +663,80 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case reelLoadedMsg:
+		if m.reelLoadGate == nil || !m.reelLoadGate.isCurrent(msg.generation) {
+			return m, nil
+		}
+		if msg.info == nil {
+			m.profileBusy = false
+			m.status = statusReelError
+			return m, nil
+		}
 		m.profileBusy = false
-		m.currentReel = msg.info
-		m.status = statusNone
-		m.marqueeOffset = 0
+		m.adoptReel(msg.info)
 		return m, m.startPlayback(msg.info.Index)
 
 	case profileEnteredMsg:
+		if msg.request != m.profileRequest {
+			return m, nil
+		}
 		m.profileBusy = false
 		m.profileOpening = false
+		m.profileClosing = false
+		m.profileTarget = ""
+		m.stopPlaybackForTransition()
 		if profile, ok := m.backend.(backend.ProfileBackend); ok {
 			state := profile.CreatorProfile()
 			// Hydration can finish before this command result reaches the TUI.
 			// In that ordering, load the real first grid reel instead of
 			// overwriting it with the source reel again.
 			if state.Generation == msg.generation && !state.Loading {
-				m.player.Stop()
-				m.status = statusLoading
 				m.comments.Clear()
-				return m, tea.Batch(m.loadCurrentReel, m.hud.ShowToast("creator reels opened"))
+				return m, tea.Batch(m.requestCurrentReel(), m.hud.ShowToast("creator reels opened"))
 			}
 		}
-		m.currentReel = msg.info
-		m.status = statusNone
+		m.adoptReel(msg.info)
 		m.comments.Clear()
-		m.marqueeOffset = 0
 		return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast("creator reels opened"))
 
 	case profileExitedMsg:
+		if msg.request != m.profileRequest {
+			return m, nil
+		}
 		m.profileBusy = false
 		m.profileOpening = false
-		m.currentReel = msg.info
-		m.status = statusNone
+		m.profileClosing = false
+		m.profileTarget = ""
+		m.adoptReel(msg.info)
 		m.comments.Clear()
-		m.marqueeOffset = 0
-		return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast("back to main feed"))
+		return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast("main feed restored"))
 
 	case profileActionFailedMsg:
+		if msg.request != m.profileRequest {
+			return m, nil
+		}
 		m.profileBusy = false
 		m.profileOpening = false
+		m.profileClosing = false
+		m.profileTarget = ""
 		m.lastErr = msg.err
 		m.status = statusNone
 		if msg.info != nil {
-			m.currentReel = msg.info
+			m.stopPlaybackForTransition()
+			m.adoptReel(msg.info)
 			return m, tea.Batch(m.startPlayback(msg.info.Index), m.hud.ShowToast(msg.action+" failed"))
 		}
 		return m, m.hud.ShowToast(msg.action + " failed")
 
 	case profileFollowedMsg:
+		if msg.request != m.followRequest {
+			return m, nil
+		}
 		m.profileBusy = false
+		if strings.EqualFold(m.followTarget, msg.username) {
+			m.followTarget = ""
+		}
 		if msg.err != nil {
-			return m, m.hud.ShowToast("follow action failed")
+			return m, m.hud.ShowToast("Instagram did not confirm the follow action")
 		}
 		if msg.following {
 			return m, m.hud.ShowToast("following creator")
@@ -719,6 +784,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.queueShareReset(), m.hud.ShowToast(sentToast(m.shareCount)))
 
 	case reelErrorMsg:
+		if msg.generation != 0 &&
+			(m.reelLoadGate == nil || !m.reelLoadGate.isCurrent(msg.generation)) {
+			return m, nil
+		}
 		m.profileBusy = false
 		m.status = statusReelError
 		return m, nil
@@ -730,6 +799,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.hud.ShowToast("loading more reels failed — scroll to retry")
 
 	case videoReadyMsg:
+		if !m.acceptsPlayback(msg.generation, msg.pk, msg.code) {
+			return m, nil
+		}
 		m.status = statusNone
 		m.reelPFP = msg.pfp
 		m.reelFloating = msg.contextFloating
@@ -776,7 +848,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case videoErrorMsg:
+		if !m.acceptsPlayback(msg.generation, msg.pk, msg.code) {
+			return m, nil
+		}
 		m.status = statusVideoError
+		m.lastErr = msg.err
 		return m, nil
 	}
 

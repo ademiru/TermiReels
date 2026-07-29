@@ -259,6 +259,15 @@ func (b *ChromeBackend) updateReelComments(pk string, comments []Comment) {
 	})
 }
 
+func (b *ChromeBackend) replaceReelComments(pk string, comments []Comment) {
+	if comments == nil {
+		comments = make([]Comment, 0)
+	}
+	b.mutateReelByPK(pk, func(r *Reel) {
+		r.Comments = comments
+	})
+}
+
 // insertChildComments splices a parent comment's replies into the reel's comment
 // list immediately after the parent.
 func (b *ChromeBackend) insertChildComments(reelPK, parentPK string, children []Comment) {
@@ -640,7 +649,25 @@ func (b *ChromeBackend) OpenComments() {
 		return
 	}
 	b.comments.Open(pk)
-	b.clickCommentsButton()
+	if reel, ok := b.reelByPK(pk); ok && reel.Comments != nil {
+		b.events <- Event{Type: EventCommentsCaptured, Count: len(reel.Comments)}
+		return
+	}
+
+	loaded := false
+	if count, fetchErr := b.fetchInitialComments(pk); fetchErr != nil {
+		log.Printf("comments API failed for reel %s: %v", pk, fetchErr)
+	} else {
+		loaded = true
+		log.Printf("comments API loaded reel %s: %d comments", pk, count)
+	}
+
+	// Opening Instagram's own panel still captures its GraphQL template for
+	// pagination and child replies. Initial rendering no longer depends on
+	// this fragile, localized DOM control.
+	if !b.clickCommentsButton() && !loaded {
+		b.events <- Event{Type: EventCommentsCaptured}
+	}
 }
 
 // CloseComments closes the comments panel UI
@@ -733,7 +760,7 @@ func (b *ChromeBackend) clickCloseButton() {
 }
 
 // clickCommentsButton finds and clicks the comments button for the visible video
-func (b *ChromeBackend) clickCommentsButton() {
+func (b *ChromeBackend) clickCommentsButton() bool {
 	js := `
 		(() => {
 			// Clear old markers first
@@ -750,7 +777,11 @@ func (b *ChromeBackend) clickCommentsButton() {
 					let parent = video.parentElement;
 					for (let i = 0; i < 15; i++) {
 						if (!parent) break;
-						const svg = parent.querySelector('svg[aria-label="Comment"]');
+						const svg = [...parent.querySelectorAll('svg[aria-label]')].find(icon => {
+							const label = (icon.getAttribute('aria-label') || '').trim().toLowerCase();
+							return label === 'comment' || label === 'yorum' ||
+								label === 'yorum yap';
+						});
 						if (svg) {
 							const btn = svg.closest('[role="button"]');
 							if (btn) {
@@ -767,12 +798,15 @@ func (b *ChromeBackend) clickCommentsButton() {
 	`
 	var found bool
 	if err := chromedp.Run(b.ctx, chromedp.Evaluate(js, &found)); err != nil || !found {
-		return
+		return false
 	}
 
-	chromedp.Run(b.ctx,
+	if err := chromedp.Run(b.ctx,
 		chromedp.Click(`[data-reels-comment-btn="true"]`, chromedp.ByQuery),
-	)
+	); err != nil {
+		return false
+	}
+	return true
 }
 
 // OpenSharePanel clicks the share button to open Instagram's share modal,

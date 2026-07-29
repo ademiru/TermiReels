@@ -122,6 +122,12 @@ func (h *HUD) HideChatBanner() {
 // viewHUD renders the heads-up display overlay area above the video.
 // topPad is the total number of lines available above the status line.
 func (m Model) viewHUD(videoWidthChars, topPad int, padding string) string {
+	if m.profileOpening || m.profileClosing {
+		return m.viewProfileTransitionHUD(videoWidthChars, topPad, padding)
+	}
+	if m.followTarget != "" {
+		return m.viewFollowTransitionHUD(videoWidthChars, topPad, padding)
+	}
 	if m.hud.active == hudNone {
 		return strings.Repeat("\n", max(topPad-1, 0))
 	}
@@ -182,6 +188,65 @@ func (m Model) viewHUD(videoWidthChars, topPad int, padding string) string {
 		b.WriteString(padding + centerInWidth(text, videoWidthChars-1, style) + "\n\n")
 	}
 
+	return b.String()
+}
+
+func (m Model) viewFollowTransitionHUD(videoWidthChars, topPad int, padding string) string {
+	target := strings.TrimPrefix(strings.TrimSpace(m.followTarget), "@")
+	title := "UPDATING FOLLOW STATUS"
+	if target != "" {
+		title = "UPDATING @" + target
+	}
+	accent := lipgloss.NewStyle().
+		Foreground(colors.Blue300Color).
+		Bold(true)
+	muted := lipgloss.NewStyle().
+		Foreground(colors.Purple100Color).
+		Faint(true)
+	badge := accent.Render("◆") + " " + accent.Render(title) + " " + m.spinner.View()
+	if topPad < 3 {
+		return padding + centerInWidth(title+"  "+m.spinner.View(), videoWidthChars-1, accent)
+	}
+	var b strings.Builder
+	b.WriteString(strings.Repeat("\n", max(topPad-3, 0)))
+	b.WriteString(padding + centerInWidth(badge, videoWidthChars-1, lipgloss.NewStyle()) + "\n")
+	b.WriteString(padding + centerInWidth(
+		"waiting for Instagram to confirm", videoWidthChars-1, muted,
+	) + "\n")
+	return b.String()
+}
+
+// viewProfileTransitionHUD is intentionally persistent: creator resolution can
+// take several seconds, so a fading toast would make the app look frozen.
+func (m Model) viewProfileTransitionHUD(videoWidthChars, topPad int, padding string) string {
+	title := "RETURNING TO MAIN FEED"
+	detail := "restoring your exact position"
+	if m.profileOpening {
+		target := strings.TrimPrefix(strings.TrimSpace(m.profileTarget), "@")
+		title = "OPENING CREATOR REELS"
+		if target != "" {
+			title = "OPENING @" + target
+		}
+		detail = "verifying and preparing the reel queue"
+	}
+
+	accent := lipgloss.NewStyle().
+		Foreground(colors.Pink400Color).
+		Bold(true)
+	muted := lipgloss.NewStyle().
+		Foreground(colors.Purple100Color).
+		Faint(true)
+	badge := accent.Render("◆") + " " + accent.Render(title) + " " + m.spinner.View()
+
+	if topPad < 3 {
+		line := centerInWidth(title+"  "+m.spinner.View(), videoWidthChars-1, accent)
+		return padding + line
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.Repeat("\n", max(topPad-3, 0)))
+	b.WriteString(padding + centerInWidth(badge, videoWidthChars-1, lipgloss.NewStyle()) + "\n")
+	b.WriteString(padding + centerInWidth(detail, videoWidthChars-1, muted) + "\n")
 	return b.String()
 }
 

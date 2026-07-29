@@ -79,6 +79,7 @@ func (cp *CommentsPanel) Clear() {
 	cp.comments = make([]backend.Comment, 0)
 	cp.cursor = 0
 	cp.scroll = 0
+	cp.loading = false
 	cp.reelPK = ""
 	cp.gifAnims = nil
 }

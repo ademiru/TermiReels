@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"strings"
 	"sync"
@@ -89,6 +88,10 @@ func (fc *FeedCursor) Current() (int, string, error) {
 
 // domPK extracts the pk of the currently visible reel from the DOM.
 func (fc *FeedCursor) domPK() (string, error) {
+	return fc.domPKContext(fc.ctx)
+}
+
+func (fc *FeedCursor) domPKContext(ctx context.Context) (string, error) {
 	var imgSrc string
 	js := `
 		(() => {
@@ -111,7 +114,7 @@ func (fc *FeedCursor) domPK() (string, error) {
 		})()
 	`
 
-	if err := chromedp.Run(fc.ctx, chromedp.Evaluate(js, &imgSrc)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &imgSrc)); err != nil {
 		return "", err
 	}
 
@@ -144,7 +147,11 @@ func (fc *FeedCursor) domPK() (string, error) {
 
 // scrollDown sends a single ArrowDown to advance to the next reel.
 func (fc *FeedCursor) scrollDown() error {
-	return chromedp.Run(fc.ctx,
+	return fc.scrollDownContext(fc.ctx)
+}
+
+func (fc *FeedCursor) scrollDownContext(ctx context.Context) error {
+	return chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.DispatchKeyEvent(input.KeyDown).
 				WithKey("ArrowDown").
@@ -158,7 +165,11 @@ func (fc *FeedCursor) scrollDown() error {
 
 // scrollUp sends a single ArrowUp to go back to the previous reel.
 func (fc *FeedCursor) scrollUp() error {
-	return chromedp.Run(fc.ctx,
+	return fc.scrollUpContext(fc.ctx)
+}
+
+func (fc *FeedCursor) scrollUpContext(ctx context.Context) error {
+	return chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.DispatchKeyEvent(input.KeyDown).
 				WithKey("ArrowUp").
@@ -184,7 +195,7 @@ func (fc *FeedCursor) SyncTo(index int) error {
 
 	defer cancel()
 
-	currentPK, _ := fc.domPK()
+	currentPK, _ := fc.domPKContext(ctx)
 
 	fc.mu.RLock()
 	if index < 1 || index > len(fc.pks) {
@@ -196,13 +207,6 @@ func (fc *FeedCursor) SyncTo(index int) error {
 		fc.mu.RUnlock()
 		return nil
 	}
-	currentIndex := 0
-	for i, pk := range fc.pks {
-		if pk == currentPK {
-			currentIndex = i + 1
-			break
-		}
-	}
 	fc.mu.RUnlock()
 
 	for i := 0; i < MaxRetries; i++ {
@@ -212,36 +216,79 @@ func (fc *FeedCursor) SyncTo(index int) error {
 		default:
 		}
 
-		pk, err := fc.domPK()
+		pk, err := fc.domPKContext(ctx)
 		if err == nil && pk == targetPK {
 			return nil
 		}
 
+		currentIndex := 0
 		if err == nil {
-			if idx := fc.indexOf(pk); idx != 0 {
-				currentIndex = idx
+			currentIndex = fc.indexOf(pk)
+		}
+		direction := feedSyncDirection(currentIndex, index, pk, targetPK)
+		switch direction {
+		case 1:
+			if err := fc.scrollDownContext(ctx); err != nil {
+				return err
 			}
+		case -1:
+			if err := fc.scrollUpContext(ctx); err != nil {
+				return err
+			}
+		default:
+			// A missing/stale DOM identity is not directional evidence. Wait
+			// for React to settle instead of guessing down and then correcting
+			// upward on the next pass.
+			if err := waitFeedSync(ctx, 150*time.Millisecond); err != nil {
+				return nil
+			}
+			continue
 		}
 
-		if currentIndex < index {
-			if err := fc.scrollDown(); err != nil {
-				return err
+		// One key event per observed identity change prevents high-latency DOM
+		// updates from receiving a burst of duplicate scrolls.
+		for poll := 0; poll < 12; poll++ {
+			if err := waitFeedSync(ctx, 100*time.Millisecond); err != nil {
+				return nil
 			}
-		} else if currentIndex > index {
-			if err := fc.scrollUp(); err != nil {
-				return err
+			observed, observeErr := fc.domPKContext(ctx)
+			if observeErr == nil && observed == targetPK {
+				return nil
 			}
-		} else {
-			// index matches but PK doesn't; try scrolling down to recover
-			if err := fc.scrollDown(); err != nil {
-				return err
+			if observeErr == nil && observed != "" && observed != pk {
+				break
 			}
 		}
-
-		time.Sleep(time.Duration(1500+rand.Intn(500)) * time.Millisecond)
 	}
 
 	return fmt.Errorf("failed to sync to index %d after %d scrolls", index, MaxRetries)
+}
+
+// feedSyncDirection returns a direction only when the DOM provides a known
+// position. Equal indexes with different PKs indicate stale or inconsistent
+// DOM data and must never trigger the old down/up recovery oscillation.
+func feedSyncDirection(currentIndex, targetIndex int, currentPK, targetPK string) int {
+	if currentPK != "" && currentPK == targetPK {
+		return 0
+	}
+	if currentIndex == 0 || targetIndex == 0 || currentIndex == targetIndex {
+		return 0
+	}
+	if currentIndex < targetIndex {
+		return 1
+	}
+	return -1
+}
+
+func waitFeedSync(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // IsSyncing returns true if a SyncTo is in flight (its derived ctx not yet done).

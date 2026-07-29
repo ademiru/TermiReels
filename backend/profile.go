@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -59,6 +60,12 @@ func (b *ChromeBackend) setCreatorFollowState(username string, following bool) {
 	b.creatorFollowing[username] = following
 	b.creatorKnown[username] = true
 	b.creatorFollowMu.Unlock()
+	b.modeMu.Lock()
+	if strings.EqualFold(b.profileState.Username, username) {
+		b.profileState.Following = following
+		b.profileState.Known = true
+	}
+	b.modeMu.Unlock()
 	select {
 	case b.events <- Event{Type: EventCreatorFollowUpdated}:
 	default:
@@ -66,60 +73,328 @@ func (b *ChromeBackend) setCreatorFollowState(username string, following bool) {
 }
 
 func (b *ChromeBackend) creatorFollowOperation(username string, toggle bool) (bool, error) {
-	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
-	if username == "" {
-		return false, fmt.Errorf("empty creator username")
+	username = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(username), "@"))
+	if !creatorUsernamePattern.MatchString(username) {
+		return false, fmt.Errorf("invalid creator username")
 	}
-	b.profileOpMu.Lock()
-	defer b.profileOpMu.Unlock()
+	// Follow checks run in their own short-lived browser tab and must not hold
+	// the creator-feed navigation lock. A background state refresh should
+	// never delay opening or leaving a creator feed.
+	b.creatorFollowOpMu.Lock()
+	defer b.creatorFollowOpMu.Unlock()
 	ctx, cancel := chromedp.NewContext(b.feedCtx)
 	defer cancel()
 	ctx, timeoutCancel := context.WithTimeout(ctx, 12*time.Second)
 	defer timeoutCancel()
 
-	var result string
-	js := fmt.Sprintf(`(() => {
+	type followResult struct {
+		OK        bool   `json:"ok"`
+		Following bool   `json:"following"`
+		Requested bool   `json:"requested"`
+		Source    string `json:"source"`
+		Error     string `json:"error"`
+	}
+	var result followResult
+	// Prefer Instagram's authenticated same-origin friendship endpoints, but
+	// keep the target profile's own button as a guarded fallback. Instagram
+	// intermittently returns HTTP 400 from web_profile_info for otherwise
+	// accessible accounts. Running in an isolated tab on the exact profile
+	// route lets us recover without touching the main Reels feed.
+	js := fmt.Sprintf(`(async () => {
+		const username = %s;
 		const toggle = %t;
-		const labels = [...document.querySelectorAll('button,[role="button"]')];
-		const find = label => labels.find(b => (b.innerText || '').trim() === label);
-		const following = find('Following');
-		const requested = find('Requested');
-		const follow = find('Follow');
-		if (requested) return 'following';
-		if (following) { if (toggle) following.click(); return toggle ? 'confirm_unfollow' : 'following'; }
-		if (follow) { if (toggle) follow.click(); return toggle ? 'followed' : 'not_following'; }
-		return 'unavailable';
-	})()`, toggle)
+		const appID = %s;
+		const expectedPath = '/' + username.toLowerCase() + '/';
+		const csrf = document.cookie.split('; ')
+			.find(c => c.startsWith('csrftoken='))
+			?.split('=').slice(1).join('=') || '';
+		const headers = {
+			'x-ig-app-id': appID,
+			'x-asbd-id': '129477',
+			'x-requested-with': 'XMLHttpRequest'
+		};
+		const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+		const normalize = value => (value || '')
+			.replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+		const activeLabels = new Set([
+			'following', 'requested', 'takiptesin', 'istek gönderildi',
+			'takip isteği gönderildi'
+		]);
+		const inactiveLabels = new Set([
+			'follow', 'follow back', 'takip et', 'geri takip et'
+		]);
+		const confirmLabels = new Set([
+			'unfollow', 'cancel request', 'takibi bırak', 'takipten çık',
+			'isteği iptal et', 'takip isteğini iptal et'
+		]);
+		const isVisible = element => {
+			if (!element || !element.isConnected) return false;
+			const rect = element.getBoundingClientRect();
+			const style = getComputedStyle(element);
+			return rect.width > 0 && rect.height > 0 &&
+				style.visibility !== 'hidden' && style.display !== 'none';
+		};
+		const elementLabel = element => normalize(
+			element.innerText || element.textContent ||
+			element.getAttribute('aria-label') || element.getAttribute('title')
+		);
+		const routeMatches = () =>
+			location.pathname.toLowerCase().replace(/\/+$/, '/') === expectedPath;
+		const findButton = labels => {
+			if (!routeMatches()) return null;
+			const root = document.querySelector('main');
+			if (!root) return null;
+			for (const element of root.querySelectorAll('button,[role="button"]')) {
+				if (isVisible(element) && labels.has(elementLabel(element))) {
+					return element;
+				}
+			}
+			return null;
+		};
+		const domState = () => {
+			const activeButton = findButton(activeLabels);
+			if (activeButton) {
+				const label = elementLabel(activeButton);
+				return {
+					id: '', following: true, requested:
+						label === 'requested' ||
+						label === 'istek gönderildi' ||
+						label === 'takip isteği gönderildi',
+					source: 'dom', button: activeButton
+				};
+			}
+			const inactiveButton = findButton(inactiveLabels);
+			if (inactiveButton) {
+				return {
+					id: '', following: false, requested: false,
+					source: 'dom', button: inactiveButton
+				};
+			}
+			return null;
+		};
+		let lastProfileError = '';
+		const apiState = async () => {
+			let response;
+			try {
+				response = await fetch(
+					'/api/v1/users/web_profile_info/?username=' +
+						encodeURIComponent(username),
+					{
+						credentials: 'include',
+						headers: {
+							...headers,
+							'referer': location.href
+						},
+						cache: 'no-store'
+					}
+				);
+			} catch (_) {
+				lastProfileError = 'profile_network_error';
+				return null;
+			}
+			if (!response.ok) {
+				let detail = '';
+				try {
+					detail = normalize((await response.text()).slice(0, 160));
+				} catch (_) {}
+				lastProfileError = 'profile_http_' + response.status +
+					(detail ? ':' + detail : '');
+				return null;
+			}
+			let payload;
+			try {
+				payload = await response.json();
+			} catch (_) {
+				lastProfileError = 'profile_invalid_json';
+				return null;
+			}
+			const user = payload && payload.data && payload.data.user;
+			if (!user || !/^\d+$/.test(String(user.id || ''))) {
+				lastProfileError = 'profile_identity_unavailable';
+				return null;
+			}
+			const friendship = user.friendship_status || {};
+			return {
+				id: String(user.id),
+				following: !!(friendship.following || user.followed_by_viewer),
+				requested: !!(friendship.outgoing_request || user.requested_by_viewer),
+				source: 'api', button: null
+			};
+		};
+		const state = async (waitForDOM = false) => {
+			const api = await apiState();
+			if (api) return api;
+			const attempts = waitForDOM ? 30 : 1;
+			for (let attempt = 0; attempt < attempts; attempt++) {
+				const dom = domState();
+				if (dom) return dom;
+				if (attempt + 1 < attempts) await sleep(200);
+			}
+			return null;
+		};
+		const verifiedState = value => ({
+			ok: true,
+			following: !!(value.following || value.requested),
+			requested: !!value.requested,
+			source: value.source || '',
+			error: ''
+		});
+		const waitForActive = async wantedActive => {
+			for (let attempt = 0; attempt < 15; attempt++) {
+				if (attempt > 0) await sleep(attempt < 4 ? 200 : 350);
+				const current = await state(false);
+				if (current &&
+					!!(current.following || current.requested) === wantedActive) {
+					return current;
+				}
+			}
+			return null;
+		};
+		const domToggle = async wantedActive => {
+			let current = domState();
+			for (let attempt = 0; !current && attempt < 30; attempt++) {
+				await sleep(200);
+				current = domState();
+			}
+			if (!current) throw new Error(
+				(lastProfileError || 'profile_api_unavailable') +
+				';dom_follow_button_unavailable'
+			);
+			if (!!(current.following || current.requested) === wantedActive) {
+				return current;
+			}
+			current.button.click();
+			if (!wantedActive) {
+				for (let attempt = 0; attempt < 15; attempt++) {
+					await sleep(150);
+					const candidates = document.querySelectorAll(
+						'[role="dialog"] button,[role="dialog"] [role="button"],' +
+						'body > div button,body > div [role="button"]'
+					);
+					let confirmation = null;
+					for (const candidate of candidates) {
+						if (isVisible(candidate) &&
+							confirmLabels.has(elementLabel(candidate))) {
+							confirmation = candidate;
+							break;
+						}
+					}
+					if (confirmation) {
+						confirmation.click();
+						break;
+					}
+					const observed = domState();
+					if (observed &&
+						!(observed.following || observed.requested)) break;
+				}
+			}
+			for (let attempt = 0; attempt < 25; attempt++) {
+				await sleep(attempt < 4 ? 180 : 300);
+				const observed = domState();
+				if (observed &&
+					!!(observed.following || observed.requested) === wantedActive) {
+					return observed;
+				}
+			}
+			throw new Error('dom_mutation_not_confirmed');
+		};
+		try {
+			const before = await state(true);
+			if (!before) {
+				throw new Error(
+					(lastProfileError || 'profile_state_unavailable') +
+					';dom_follow_button_unavailable'
+				);
+			}
+			if (!toggle) {
+				return verifiedState(before);
+			}
+			const wasActive = before.following || before.requested;
+			const wantedActive = !wasActive;
+			let mutationError = '';
+			if (before.id) {
+				const endpoint = '/api/v1/friendships/' +
+					(wasActive ? 'destroy/' : 'create/') +
+					encodeURIComponent(before.id) + '/';
+				let response;
+				try {
+					response = await fetch(endpoint, {
+						method: 'POST',
+						credentials: 'include',
+						headers: {
+							...headers,
+							'content-type': 'application/x-www-form-urlencoded',
+							'x-csrftoken': csrf,
+							'referer': location.href
+						},
+						body: ''
+					});
+				} catch (_) {
+					mutationError = 'mutation_network_error';
+				}
+				if (response && response.ok) {
+					const confirmed = await waitForActive(wantedActive);
+					if (confirmed) return verifiedState(confirmed);
+					mutationError = 'api_mutation_not_confirmed';
+				} else if (response) {
+					mutationError = 'mutation_http_' + response.status;
+				}
+			}
+			const afterDOM = await domToggle(wantedActive);
+			const confirmed = await waitForActive(wantedActive);
+			if (confirmed) return verifiedState(confirmed);
+			if (afterDOM &&
+				!!(afterDOM.following || afterDOM.requested) === wantedActive) {
+				return verifiedState(afterDOM);
+			}
+			throw new Error(mutationError || 'mutation_not_confirmed');
+		} catch (error) {
+			return {
+				ok: false, following: false, requested: false,
+				error: error && error.message ? error.message : 'follow_request_failed'
+			};
+		}
+	})().then(result => JSON.stringify(result))`,
+		jsonStringForJS(username), toggle, jsonStringForJS(expectedAppID))
+	var rawResult string
+	target := "https://www.instagram.com/" + username + "/"
 	if err := chromedp.Run(ctx,
-		chromedp.Navigate("https://www.instagram.com/"+username+"/"),
+		chromedp.Navigate(target),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.Evaluate(js, &result),
+		chromedp.Evaluate(js, &rawResult,
+			func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+				return p.WithAwaitPromise(true)
+			}),
 	); err != nil {
+		log.Printf("creator follow @%s failed: %v", username, err)
 		return false, err
 	}
-	following := false
-	switch result {
-	case "following", "followed":
-		following = true
-	case "not_following":
-	case "confirm_unfollow":
-		var clicked bool
-		if err := chromedp.Run(ctx,
-			chromedp.Sleep(250*time.Millisecond),
-			chromedp.Evaluate(`(() => {
-				const b = [...document.querySelectorAll('button,[role="button"]')]
-					.find(x => (x.innerText || '').trim() === 'Unfollow');
-				if (!b) return false; b.click(); return true;
-			})()`, &clicked),
-		); err != nil || !clicked {
-			return true, fmt.Errorf("unfollow confirmation unavailable")
-		}
-	default:
-		return false, fmt.Errorf("follow control unavailable")
+	if rawResult == "" {
+		err := fmt.Errorf("Instagram returned an empty follow result")
+		log.Printf("creator follow @%s failed: %v", username, err)
+		return false, err
 	}
-	b.setCreatorFollowState(username, following)
-	return following, nil
+	if err := json.Unmarshal([]byte(rawResult), &result); err != nil {
+		log.Printf(
+			"creator follow @%s failed: invalid result %q: %v",
+			username, rawResult, err,
+		)
+		return false, fmt.Errorf("invalid Instagram follow result: %w", err)
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "unknown_response"
+		}
+		err := fmt.Errorf("Instagram did not confirm follow state: %s", result.Error)
+		log.Printf("creator follow @%s failed: %v", username, err)
+		return result.Following, err
+	}
+	b.setCreatorFollowState(username, result.Following)
+	log.Printf(
+		"creator follow @%s confirmed via %s: following=%t requested=%t",
+		username, result.Source, result.Following, result.Requested,
+	)
+	return result.Following, nil
 }
 
 func (b *ChromeBackend) RefreshCreatorFollow(username string) {
@@ -735,9 +1010,6 @@ func (b *ChromeBackend) CreatorProfile() CreatorProfileState {
 }
 
 func (b *ChromeBackend) ToggleCreatorFollow() (bool, error) {
-	b.profileOpMu.Lock()
-	defer b.profileOpMu.Unlock()
-
 	b.modeMu.RLock()
 	pc := b.profile
 	state := b.profileState
@@ -745,71 +1017,8 @@ func (b *ChromeBackend) ToggleCreatorFollow() (bool, error) {
 	if pc == nil {
 		return false, fmt.Errorf("not browsing a creator profile")
 	}
-	index, _, err := pc.Current()
-	if err != nil {
+	if _, _, err := pc.Current(); err != nil {
 		return state.Following, err
 	}
-	returnURL := pc.targetURL(index)
-	profileURL := "https://www.instagram.com/" + pc.Username() + "/"
-
-	var result string
-	js := `(() => {
-		const buttons = [...document.querySelectorAll('button,[role="button"]')];
-		const find = label => buttons.find(b => (b.innerText || '').trim() === label);
-		const following = find('Following');
-		const requested = find('Requested');
-		const follow = find('Follow');
-		if (requested) return 'requested';
-		if (following) { following.click(); return 'unfollow_dialog'; }
-		if (follow) { follow.click(); return 'followed'; }
-		return 'unavailable';
-	})()`
-	if err := chromedp.Run(pc.Context(),
-		chromedp.Navigate(profileURL),
-		chromedp.WaitReady("body"),
-		chromedp.Sleep(700*time.Millisecond),
-		chromedp.Evaluate(js, &result),
-	); err != nil {
-		return state.Following, err
-	}
-
-	following := state.Following
-	switch result {
-	case "followed":
-		following = true
-	case "unfollow_dialog":
-		var clicked bool
-		if err := chromedp.Run(pc.Context(),
-			chromedp.Sleep(300*time.Millisecond),
-			chromedp.Evaluate(`(() => {
-				const b = [...document.querySelectorAll('button,[role="button"]')]
-					.find(x => (x.innerText || '').trim() === 'Unfollow');
-				if (!b) return false;
-				b.click();
-				return true;
-			})()`, &clicked),
-		); err != nil || !clicked {
-			_ = chromedp.Run(pc.Context(), chromedp.Navigate(returnURL))
-			if err != nil {
-				return state.Following, err
-			}
-			return state.Following, fmt.Errorf("unfollow confirmation unavailable")
-		}
-		following = false
-	case "requested":
-		_ = chromedp.Run(pc.Context(), chromedp.Navigate(returnURL))
-		return true, fmt.Errorf("follow request is pending")
-	default:
-		_ = chromedp.Run(pc.Context(), chromedp.Navigate(returnURL))
-		return state.Following, fmt.Errorf("follow control unavailable")
-	}
-
-	b.modeMu.Lock()
-	b.profileState.Following = following
-	b.profileState.Known = true
-	b.modeMu.Unlock()
-	if err := chromedp.Run(pc.Context(), chromedp.Navigate(returnURL)); err != nil {
-		return following, err
-	}
-	return following, nil
+	return b.creatorFollowOperation(pc.Username(), true)
 }

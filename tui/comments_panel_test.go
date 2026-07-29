@@ -98,6 +98,11 @@ func TestEmptyCommentsPanelSaysSo(t *testing.T) {
 	if out := cp.View(40, 10, ""); !strings.Contains(out, "━") {
 		t.Errorf("loading panel has no skeleton rows: %q", out)
 	}
+	cp.Clear()
+	cp.Open("next-pk")
+	if out := cp.View(40, 10, ""); !strings.Contains(out, "No comments yet") {
+		t.Errorf("cleared panel retained stale loading state: %q", out)
+	}
 }
 
 // The heart's recorded hit box has to match where it is drawn, or clicking a

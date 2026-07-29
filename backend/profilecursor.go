@@ -259,6 +259,10 @@ func (pc *ProfileCursor) installGrid(codes []string) int {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
+	currentCode := ""
+	if pc.cursor >= 0 && pc.cursor < len(pc.codes) {
+		currentCode = pc.codes[pc.cursor]
+	}
 	resolved := make(map[string]string, len(pc.codes))
 	for i, code := range pc.codes {
 		if i < len(pc.pks) && pc.pks[i] != "" {
@@ -284,6 +288,15 @@ func (pc *ProfileCursor) installGrid(codes []string) int {
 	pc.codes = nextCodes
 	pc.pks = nextPKs
 	pc.cursor = 0
+	// Hydration may insert newer reels before the one already on screen.
+	// Follow its immutable shortcode instead of silently changing the visible
+	// owner/content just because the numeric position moved.
+	for i, code := range nextCodes {
+		if code == currentCode {
+			pc.cursor = i
+			break
+		}
+	}
 	return len(pc.codes)
 }
 
