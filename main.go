@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -26,6 +27,9 @@ func main() {
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	skipTermCheck := flag.Bool("skip-terminal-check", false, "Start even if the terminal doesn't answer the Kitty graphics probe")
 	shortcutFlag := flag.Bool("shortcut", false, "Edit keyboard shortcuts and exit")
+	creatorProviderFlag := flag.Bool("creator-provider", false, "Enable transactional creator Reels browsing through the Playwright provider")
+	creatorAuditFlag := flag.Bool("creator-audit", false, "Audit the experimental Playwright creator provider without changing feeds")
+	creatorProviderScriptFlag := flag.String("creator-provider-script", defaultCreatorProviderScript(), "Path to the built creator provider sidecar")
 	flag.Parse()
 
 	if *versionFlag {
@@ -68,7 +72,11 @@ func main() {
 	syncOut := &SyncFile{File: os.Stdout}
 
 	p := tea.NewProgram(
-		tui.NewModel(paths.userDataDir, paths.logDir, paths.cacheDir, paths.configDir, syncOut, Version, tui.Config{LoginMode: *loginFlag, HeadedMode: *headedFlag}),
+		tui.NewModel(paths.userDataDir, paths.logDir, paths.cacheDir, paths.configDir, syncOut, Version, tui.Config{
+			LoginMode: *loginFlag, HeadedMode: *headedFlag,
+			CreatorProvider: *creatorProviderFlag, CreatorAudit: *creatorAuditFlag,
+			CreatorProviderScript: *creatorProviderScriptFlag,
+		}),
 		tea.WithAltScreen(),
 		// All-motion tracking, not just drag, so the status row can highlight
 		// the control under the pointer. updateMouse discards motion events
@@ -81,6 +89,25 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func defaultCreatorProviderScript() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return "creator-provider/dist/index.js"
+	}
+	return creatorProviderScriptForExecutable(executable)
+}
+
+func creatorProviderScriptForExecutable(executable string) string {
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	bundled := filepath.Join(filepath.Dir(executable), "creator-provider", "dist", "index.js")
+	if info, statErr := os.Stat(bundled); statErr == nil && !info.IsDir() {
+		return bundled
+	}
+	return "creator-provider/dist/index.js"
 }
 
 // unsupportedTerminalMessage explains why reels won't start here and what to

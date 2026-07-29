@@ -11,12 +11,14 @@ affiliated with or endorsed by Instagram or Meta.
 
 ## Current status
 
-The application is usable on Linux and macOS, but Instagram can change its
-page structure and private GraphQL endpoints without notice. Features that
-depend on those endpoints may require maintenance after an Instagram update.
+The application is usable on Linux and macOS. Windows is supported through
+WSL2 and a Windows-hosted WezTerm; see the
+[Windows/WSL2 guide](docs/windows-wsl.md). Instagram can change its page
+structure and private GraphQL endpoints without notice. Features that depend
+on those endpoints may require maintenance after an Instagram update.
 
-Public releases are source-only for now. The repository's existing static
-FFmpeg build is used for CI verification, not distributed as a release binary.
+Public releases include source archives and a checksummed, self-contained
+Linux/WSL x86-64 package. Other platforms currently build from source.
 
 ## Requirements
 
@@ -24,6 +26,7 @@ FFmpeg build is used for CI verification, not distributed as a release binary.
 - FFmpeg 8 development libraries
 - Chromium, Chrome, or Brave
 - A terminal with Kitty graphics support
+- Node.js 20 or newer (only for optional creator-Reels browsing)
 
 Tested terminal families include Kitty, Ghostty, WezTerm, iTerm2, Konsole and
 st. Terminal multiplexers may not forward the required graphics escapes.
@@ -31,6 +34,17 @@ st. Terminal multiplexers may not forward the required graphics escapes.
 On Linux, install the FFmpeg development package supplied by your
 distribution. On macOS, use `ffmpeg-full` from Homebrew or an equivalent
 FFmpeg 8 build.
+
+On Windows, download and run the repository's installer from PowerShell. It
+sets up the WSL2/WezTerm path and installs the checksummed release payload
+without requiring Go, FFmpeg, Node.js or Docker:
+
+```powershell
+$p="$env:TEMP\install-termireels.ps1"; irm https://raw.githubusercontent.com/ademiru/TermiReels/main/scripts/install-windows.ps1 -OutFile $p; powershell -ExecutionPolicy Bypass -File $p
+```
+
+See the [Windows/WSL2 guide](docs/windows-wsl.md) for the first Ubuntu login,
+updates and troubleshooting.
 
 ## Build
 
@@ -41,8 +55,14 @@ go build -o termireels .
 ./termireels
 ```
 
-The repository URL will be filled in when the new upstream repository is
-created.
+To enable the isolated creator-Reels provider, build its locked TypeScript
+sidecar once:
+
+```bash
+npm --prefix creator-provider ci
+npm --prefix creator-provider run build
+./termireels --creator-provider
+```
 
 ## Login
 
@@ -60,6 +80,8 @@ Useful flags:
 ```text
 --headed               keep the controlled browser visible
 --login                open the browser for login
+--creator-provider     enable isolated creator-Reels browsing
+--creator-audit        verify creator results without changing the active feed
 --shortcut             edit keyboard shortcuts and exit
 --skip-terminal-check  bypass the Kitty graphics capability probe
 --version              print the build version
@@ -78,8 +100,8 @@ Useful flags:
 | `s` / `S` | open share panel / send and close |
 | `d` / `D` | open / close reels shared in DMs |
 | `x` / `X` | open / close reactions in DM mode |
-| `u` | open the current creator's reels |
-| `f` | follow or unfollow the creator in profile mode |
+| `u` | open the current creator's reels (provider mode) |
+| `f` | follow or unfollow the creator |
 | `g` or `esc` | return from creator reels to the main feed |
 | `p` | pause |
 | `m` | mute |
@@ -89,8 +111,11 @@ Useful flags:
 | `q` or `ctrl+c` | quit |
 
 The footer, creator name, volume bar, reel progress bar, comment hearts and
-share panel also support mouse input. Creator reels use an independent cursor,
-so returning to the main feed restores the reel where you left it. All
+share panel also support mouse input. When enabled, creator reels are
+cross-checked against both the visible profile grid and Instagram's
+target-user response before a separate cursor is installed. Profile
+verification does not block `j`/`k`; scrolling cancels the pending switch.
+Returning to the main feed restores the reel where you left it. All
 keyboard bindings can be changed with:
 
 ```bash
@@ -121,6 +146,7 @@ reloaded while the application is running.
 - configurable shortcuts and live configuration reload
 - stable scrolling captions and coloured music metadata
 - audio prebuffering and underrun recovery
+- an opt-in Playwright provider that isolates and verifies creator-Reels feeds
 
 The detailed history is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -131,6 +157,9 @@ The detailed history is in [CHANGELOG.md](CHANGELOG.md).
 - The black-box test requires a real account and is not run as part of a
   normal unit-test pass.
 - Linux ARM64 requires an installed Chromium-family browser.
+- Creator-Reels browsing currently installs the first 12 verified entries;
+  provider pagination remains disabled rather than falling back to
+  recommendations.
 
 ## License and attribution
 

@@ -99,19 +99,35 @@ func (m Model) mouseScroll(direction int) (tea.Model, tea.Cmd) {
 
 // mouseClick dispatches a left click at 0-indexed cell (x, y).
 func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
-	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() && !m.profileBusy {
-		action := m.profileHeaderActionAt(x, y, profile.CreatorProfile())
-		switch action {
-		case "back":
+	profile, profileAvailable := m.backend.(backend.ProfileBackend)
+	if profileAvailable && profile.IsProfileMode() && !m.profileBusy {
+		state := profile.CreatorProfile()
+		if m.profileHeaderActionAt(x, y, state) == "back" {
 			m.profileBusy = true
-			m.player.Stop()
-			m.status = statusLoading
-			m.comments.Clear()
 			return m, m.exitCreatorProfile(profile)
-		case "follow":
-			m.profileBusy = true
-			return m, m.toggleCreatorFollow(profile)
 		}
+	}
+	if follow, ok := m.backend.(backend.CreatorFollowBackend); ok &&
+		m.currentReel != nil && !m.backend.IsChatMode() && !m.profileBusy && !m.profileOpening {
+		username := m.currentReel.Username
+		if profileAvailable && profile.IsProfileMode() {
+			username = profile.CreatorProfile().Username
+		}
+		following, known := follow.CreatorFollowState(username)
+		state := backend.CreatorProfileState{Following: following, Known: known}
+		if m.profileInlineActionAt(x, y, state) == "follow" {
+			m.profileBusy = true
+			return m, m.toggleCreatorFollowFor(follow, username)
+		}
+	}
+	if m.flags.CreatorProvider && profileAvailable && !profile.IsProfileMode() &&
+		m.currentReel != nil && !m.backend.IsChatMode() && !m.profileBusy && !m.profileOpening &&
+		m.pointOnCreator(x, y) {
+		m.profileOpening = true
+		return m, tea.Batch(
+			m.enterCreatorProfile(profile, m.currentReel.Username),
+			m.hud.ShowToast("verifying creator reels"),
+		)
 	}
 	if m.pointOnVolumeSlider(x, y) {
 		m.volumeDragging = true
@@ -128,16 +144,6 @@ func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
 			return model, cmd
 		}
 	}
-	if m.pointOnCreator(x, y) {
-		if profile, ok := m.backend.(backend.ProfileBackend); ok && !profile.IsProfileMode() && !m.backend.IsChatMode() &&
-			m.currentReel != nil && !m.profileBusy {
-			m.profileBusy = true
-			m.player.Stop()
-			m.status = statusLoading
-			m.comments.Clear()
-			return m, m.enterCreatorProfile(profile, m.currentReel.Username)
-		}
-	}
 	if m.pointOnProgressBar(x, y) {
 		m.scrubbing = true
 		return m.scrubTo(x)
@@ -147,6 +153,31 @@ func (m Model) mouseClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) profileInlineActionAt(x, y int, state backend.CreatorProfileState) string {
+	if m.currentReel == nil {
+		return ""
+	}
+	row := m.videoRow - 1 + player.VideoHeightChars
+	nameWidth := max(player.VideoWidthChars-1-pfpGutter, 1)
+	usernameBudget := max(nameWidth-lipgloss.Width(profileInlineFollowLabel(state))-1, 1)
+	username := "@" + m.currentReel.Username
+	if m.currentReel.IsVerified {
+		username = truncateByWidth(username, max(usernameBudget-2, 1))
+	} else if lipgloss.Width(username) > usernameBudget {
+		username = truncateByWidth(username, max(usernameBudget-1, 1)) + "…"
+	}
+	start := m.videoCol - 1 + pfpGutter + lipgloss.Width(username)
+	if m.currentReel.IsVerified {
+		start += 2
+	}
+	start++ // gap before the inline button
+	end := start + lipgloss.Width(profileInlineFollowLabel(state))
+	if y == row && x >= start && x < end {
+		return "follow"
+	}
+	return ""
 }
 
 func (m Model) profileHeaderActionAt(x, y int, state backend.CreatorProfileState) string {

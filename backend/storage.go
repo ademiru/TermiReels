@@ -385,6 +385,24 @@ func (b *ChromeBackend) DownloadContext(ctx context.Context, index int) (string,
 	if pk == "" {
 		return "", "", nil, fmt.Errorf("index out of range")
 	}
+	return b.downloadPKContext(ctx, index, pk)
+}
+
+func (b *ChromeBackend) DownloadReelContext(ctx context.Context, index int, pk string) (string, string, []FloatingPfpFile, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", nil, err
+	}
+	if pk == "" {
+		return "", "", nil, fmt.Errorf("empty reel identity")
+	}
+	return b.downloadPKContext(ctx, index, pk)
+}
+
+// downloadPKContext pins a speculative download to an immutable reel
+// identity. Source cursors may change while an HTTP request is in flight; a
+// captured PK prevents that transition from redirecting the work to an
+// unrelated reel at the same numeric index.
+func (b *ChromeBackend) downloadPKContext(ctx context.Context, index int, pk string) (string, string, []FloatingPfpFile, error) {
 	b.reelsMu.RLock()
 	r, ok := b.reels[pk]
 	if !ok {

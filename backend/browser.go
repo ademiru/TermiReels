@@ -19,13 +19,16 @@ import (
 // NewChromeBackend creates a new Chrome-based backend
 func NewChromeBackend(userDataDir, cacheDir, configDir string) *ChromeBackend {
 	b := ChromeBackend{
-		reels:       make(map[string]*Reel),
-		comments:    &CommentsState{},
-		dm:          &dmState{},
-		events:      make(chan Event, 100),
-		userDataDir: userDataDir,
-		cacheDir:    cacheDir,
-		configDir:   configDir,
+		reels:            make(map[string]*Reel),
+		comments:         &CommentsState{},
+		dm:               &dmState{},
+		events:           make(chan Event, 100),
+		userDataDir:      userDataDir,
+		cacheDir:         cacheDir,
+		configDir:        configDir,
+		creatorFollowing: make(map[string]bool),
+		creatorKnown:     make(map[string]bool),
+		creatorAuditSeen: make(map[string]bool),
 	}
 
 	b.initStorage()
@@ -137,14 +140,31 @@ func (b *ChromeBackend) NavigateToReels() error {
 
 // Stop closes the browser
 func (b *ChromeBackend) Stop() {
+	b.creatorProviderMu.Lock()
+	if b.creatorProvider != nil {
+		_ = b.creatorProvider.Close()
+		b.creatorProvider = nil
+	}
+	b.creatorProviderMu.Unlock()
 	b.stopDMSession()
+	b.modeMu.RLock()
+	profileCancel := b.profileCancel
+	b.modeMu.RUnlock()
+	if profileCancel != nil {
+		profileCancel()
+	}
+	b.profileOpMu.Lock()
+	b.restoreFeedMode()
+	b.profileOpMu.Unlock()
 	if b.feedCancel != nil {
 		b.feedCancel()
 	}
 	if b.allocCancel != nil {
 		b.allocCancel()
 	}
-	close(b.events)
+	// Keep the event channel alive: the backend is restarted in-place when the
+	// user switches from headless login to the visible browser. Closing it
+	// here used to break the restarted session and raced background senders.
 }
 
 // Events returns the event channel
@@ -195,6 +215,12 @@ func (b *ChromeBackend) GetCurrent() (*ReelInfo, error) {
 	if !ok {
 		return nil, fmt.Errorf("reel pk=%s not in cache", pk)
 	}
+	if profile, ok := cur.(*ProfileCursor); ok && !profile.contains(reel.Code, reel.PK) {
+		return nil, fmt.Errorf(
+			"profile isolation rejected unverified @%s reel %s",
+			profile.Username(), reel.Code,
+		)
+	}
 	return &ReelInfo{Index: idx, Total: cur.Total(), Reel: reel}, nil
 }
 
@@ -212,6 +238,12 @@ func (b *ChromeBackend) GetReel(index int) (*ReelInfo, error) {
 	reel, ok := b.reelByPK(pk)
 	if !ok {
 		return nil, fmt.Errorf("reel pk=%s not in cache", pk)
+	}
+	if profile, ok := cur.(*ProfileCursor); ok && !profile.contains(reel.Code, reel.PK) {
+		return nil, fmt.Errorf(
+			"profile isolation rejected unverified @%s reel %s",
+			profile.Username(), reel.Code,
+		)
 	}
 	return &ReelInfo{Index: index, Total: total, Reel: reel}, nil
 }

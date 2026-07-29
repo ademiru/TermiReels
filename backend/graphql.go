@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 
@@ -100,6 +101,97 @@ type reelResponse struct {
 			} `json:"edges"`
 		} `json:"xdt_api__v1__clips__home__connection_v2"`
 	} `json:"data"`
+}
+
+func (r reelResponse) mediaByCode(code string) (reelMedia, bool) {
+	for _, edge := range r.Data.Connection.Edges {
+		media := edge.Node.Media
+		if media.Code == code && media.PK != "" {
+			return media, true
+		}
+	}
+	return reelMedia{}, false
+}
+
+// extractReelMedia handles profile-Reels payloads whose root field changes
+// independently from the home clips connection. Array order is retained.
+func extractReelMedia(body string) []reelMedia {
+	var root any
+	if json.Unmarshal([]byte(body), &root) != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var result []reelMedia
+	var walk func(any)
+	walk = func(value any) {
+		switch node := value.(type) {
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		case map[string]any:
+			code, _ := node["code"].(string)
+			pk, _ := node["pk"].(string)
+			if code != "" && pk != "" {
+				raw, err := json.Marshal(node)
+				if err == nil {
+					var media reelMedia
+					if json.Unmarshal(raw, &media) == nil && media.Code != "" && media.PK != "" {
+						if _, exists := seen[media.Code]; !exists {
+							seen[media.Code] = struct{}{}
+							result = append(result, media)
+						}
+					}
+				}
+				return
+			}
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return result
+}
+
+func (b *ChromeBackend) processAuthoritativeProfileResponse(body string, profile *ProfileCursor) int {
+	count := 0
+	for _, media := range extractReelMedia(body) {
+		if media.User.Username == "" {
+			if profile.captureCandidate(media.Code) {
+				log.Printf(
+					"creator profile media candidate: target=@%s code=%s",
+					profile.Username(), media.Code,
+				)
+				count++
+			}
+			continue
+		}
+		if !strings.EqualFold(media.User.Username, profile.Username()) {
+			log.Printf(
+				"creator profile media rejected: target=@%s code=%s owner=@%s",
+				profile.Username(), media.Code, media.User.Username,
+			)
+			continue
+		}
+		resolvedPK := ""
+		if len(media.VideoVersions) > 0 {
+			b.reelsMu.Lock()
+			if _, exists := b.reels[media.PK]; !exists {
+				b.reels[media.PK] = buildReel(media)
+			}
+			b.reelsMu.Unlock()
+			resolvedPK = media.PK
+		}
+		if profile.captureAuthoritative(media.Code, resolvedPK) {
+			log.Printf(
+				"creator profile media accepted: target=@%s code=%s owner=@%s",
+				profile.Username(), media.Code, media.User.Username,
+			)
+			count++
+		}
+	}
+	return count
 }
 
 // buildReel converts a parsed reelMedia into our Reel domain type. It can be
@@ -277,15 +369,11 @@ func execGraphQL(req graphQLRequest) (string, error) {
 // processReelResponse extracts reels from a GraphQL response. Reel storage is
 // global, but source membership is not: profile reels go only to the active
 // ProfileCursor and can never reorder or contaminate the main feed.
-func (b *ChromeBackend) processReelResponse(body string) {
+func (b *ChromeBackend) processReelResponse(body string, profile *ProfileCursor) {
 	var resp reelResponse
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return
 	}
-
-	b.modeMu.RLock()
-	profile := b.profile
-	b.modeMu.RUnlock()
 
 	for _, edge := range resp.Data.Connection.Edges {
 		media := edge.Node.Media
@@ -297,7 +385,9 @@ func (b *ChromeBackend) processReelResponse(body string) {
 		if _, exists := b.reels[media.PK]; !exists {
 			b.reels[media.PK] = buildReel(media)
 		}
-		if profile == nil || !profile.capture(media.Code, media.PK) {
+		ownedProfileMedia := profile != nil &&
+			strings.EqualFold(media.User.Username, profile.Username())
+		if profile == nil || !ownedProfileMedia || !profile.capture(media.Code, media.PK) {
 			// The main feed is the only fallback destination. A profile
 			// payload whose code is not in its grid is recommendation context,
 			// not part of that creator's reel sequence.
@@ -375,12 +465,34 @@ func (b *ChromeBackend) processFeedGraphQLBody(ctx context.Context, e *fetch.Eve
 		return
 	}
 	bodyStr := string(body)
+	postData := decodePostData(e)
+	b.modeMu.RLock()
+	profile := b.profile
+	profileCtx := b.profileCtx
+	b.modeMu.RUnlock()
+	if profileCtx != ctx {
+		profile = nil
+	}
+	lowerPost := strings.ToLower(postData)
+	lowerURL := strings.ToLower(e.Request.URL)
+	targetedProfileReels := profile != nil &&
+		(strings.Contains(lowerPost, "target_user_id") || strings.Contains(lowerURL, "target_user_id")) &&
+		(strings.Contains(lowerPost, "clip") || strings.Contains(lowerURL, "clip") ||
+			strings.Contains(lowerPost, "reel") || strings.Contains(lowerURL, "reel") ||
+			strings.Contains(lowerPost, "include_feed_video") ||
+			strings.Contains(lowerURL, "include_feed_video"))
+
 	switch {
+	case targetedProfileReels:
+		if count := b.processAuthoritativeProfileResponse(bodyStr, profile); count > 0 {
+			log.Printf("creator profile API captured: @%s %d reels", profile.Username(), count)
+		}
 	case strings.Contains(bodyStr, "xdt_api__v1__clips__home__connection_v2"):
-		b.dm.CaptureTemplate(decodePostData(e))
-		b.processReelResponse(bodyStr)
+		b.dm.CaptureTemplate(postData)
+		if profile == nil {
+			b.processReelResponse(bodyStr, profile)
+		}
 	case strings.Contains(bodyStr, "xdt_api__v1__media__media_id__comments__connection"):
-		postData := decodePostData(e)
 		// Skip pagination responses, FetchMoreComments handles those directly
 		if !strings.Contains(postData, paginationFriendlyName) {
 			b.processCommentsResponse(bodyStr, postData, e)
