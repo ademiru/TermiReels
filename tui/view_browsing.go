@@ -55,7 +55,8 @@ func (m Model) viewBrowsing() string {
 	for _, seg := range m.statusSegments() {
 		statusContent += seg.text
 	}
-	if m.status == statusLoading || m.comments.loading || m.backend.IsSyncing() || m.profileOpening {
+	if m.status == statusLoading || m.comments.loading || m.backend.IsSyncing() ||
+		m.profileOpening || m.profileClosing || m.followTarget != "" {
 		statusContent += "  " + m.spinner.View()
 	}
 	statusX := m.statusLineStart()
@@ -68,7 +69,6 @@ func (m Model) viewBrowsing() string {
 			total := m.currentReel.Total
 			if profile, profileOK := m.backend.(backend.ProfileBackend); profileOK && profile.IsProfileMode() {
 				state := profile.CreatorProfile()
-				followUsername = state.Username
 				total = state.Total
 			}
 			following, known := follow.CreatorFollowState(followUsername)
@@ -314,32 +314,40 @@ func (m Model) updateBrowsing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	profile, profileAvailable := m.backend.(backend.ProfileBackend)
 
 	switch {
-	case profileAvailable && (profile.IsProfileMode() || m.profileOpening) &&
+	case profileAvailable && !m.profileClosing &&
+		(profile.IsProfileMode() || m.profileOpening) &&
 		slices.Contains(config.KeysProfileBack, key):
-		return m, m.exitCreatorProfile(profile)
+		m.profileBusy = true
+		m.profileClosing = true
+		m.profileTarget = ""
+		m.profileRequest++
+		m.stopPlaybackForTransition()
+		m.comments.Clear()
+		return m, m.exitCreatorProfile(profile, m.profileRequest)
 
-	case followAvailable && !m.profileBusy && !m.profileOpening && !m.backend.IsChatMode() &&
+	case followAvailable && !m.profileBusy && !m.profileOpening && !m.profileClosing && !m.backend.IsChatMode() &&
 		slices.Contains(config.KeysProfileFollow, key):
 		if m.currentReel == nil || m.backend.IsSyncing() {
 			return m, nil
 		}
 		username := m.currentReel.Username
-		if profileAvailable && profile.IsProfileMode() {
-			username = profile.CreatorProfile().Username
-		}
 		m.profileBusy = true
-		return m, m.toggleCreatorFollowFor(follow, username)
+		m.followTarget = username
+		m.followRequest++
+		return m, m.toggleCreatorFollowFor(follow, username, m.followRequest)
 
 	case m.flags.CreatorProvider && profileAvailable && !profile.IsProfileMode() &&
-		!m.profileBusy && !m.profileOpening && !m.backend.IsChatMode() &&
+		!m.profileBusy && !m.profileOpening && !m.profileClosing && !m.backend.IsChatMode() &&
 		slices.Contains(config.KeysProfileOpen, key):
 		if m.currentReel == nil || m.backend.IsSyncing() {
 			return m, nil
 		}
 		m.profileOpening = true
+		m.profileTarget = m.currentReel.Username
+		m.profileRequest++
 		return m, tea.Batch(
-			m.enterCreatorProfile(profile, m.currentReel.Username),
-			m.hud.ShowToast("verifying creator reels"),
+			m.enterCreatorProfile(profile, m.currentReel.Username, m.profileRequest),
+			m.hud.ShowToast("preparing creator feed"),
 		)
 
 	// Chats panel select takes priority over other keys
@@ -351,15 +359,14 @@ func (m Model) updateBrowsing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		threadKey, title := chat.ThreadKey, chat.Title
 		m.chats.Close()
 		m.closePanelLayout()
-		m.player.Stop()
-		m.status = statusLoading
+		m.stopPlaybackForTransition()
 		m.comments.Clear()
 		if err := m.backend.EnterChatMode(threadKey); err != nil {
 			m.status = statusReelError
 			return m, nil
 		}
 		m.player.SetBorder(colors.Blue300Color)
-		return m, tea.Batch(m.loadCurrentReel, m.hud.ShowChatBanner(title, config.KeysReactOpen))
+		return m, tea.Batch(m.requestCurrentReel(), m.hud.ShowChatBanner(title, config.KeysReactOpen))
 
 	// React select sends the highlighted reaction to the current reel
 	case m.react.IsOpen() && slices.Contains(config.KeysSelect, key):
@@ -545,41 +552,51 @@ func sentToast(friends int) string {
 	}
 }
 
-func (m Model) enterCreatorProfile(profile backend.ProfileBackend, username string) tea.Cmd {
+func (m Model) enterCreatorProfile(profile backend.ProfileBackend, username string, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		info, err := profile.EnterCreatorProfile(username)
 		if err != nil {
 			current, _ := m.backend.GetCurrent()
-			return profileActionFailedMsg{action: "opening profile", err: err, info: current}
+			return profileActionFailedMsg{
+				action: "opening profile", err: err, info: current, request: request,
+			}
 		}
 		return profileEnteredMsg{
-			info: info, generation: profile.CreatorProfile().Generation,
+			info: info, generation: profile.CreatorProfile().Generation, request: request,
 		}
 	}
 }
 
-func (m Model) exitCreatorProfile(profile backend.ProfileBackend) tea.Cmd {
+func (m Model) exitCreatorProfile(profile backend.ProfileBackend, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		info, err := profile.ExitCreatorProfile()
 		if err != nil {
 			current, _ := m.backend.GetCurrent()
-			return profileActionFailedMsg{action: "returning to feed", err: err, info: current}
+			return profileActionFailedMsg{
+				action: "returning to feed", err: err, info: current, request: request,
+			}
 		}
-		return profileExitedMsg{info: info}
+		return profileExitedMsg{info: info, request: request}
 	}
 }
 
-func (m Model) toggleCreatorFollow(profile backend.ProfileBackend) tea.Cmd {
+func (m Model) toggleCreatorFollow(profile backend.ProfileBackend, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		following, err := profile.ToggleCreatorFollow()
-		return profileFollowedMsg{following: following, err: err}
+		return profileFollowedMsg{
+			username: profile.CreatorProfile().Username, following: following, err: err, request: request,
+		}
 	}
 }
 
-func (m Model) toggleCreatorFollowFor(follow backend.CreatorFollowBackend, username string) tea.Cmd {
+func (m Model) toggleCreatorFollowFor(
+	follow backend.CreatorFollowBackend, username string, request uint64,
+) tea.Cmd {
 	return func() tea.Msg {
 		following, err := follow.ToggleCreatorFollowFor(username)
-		return profileFollowedMsg{following: following, err: err}
+		return profileFollowedMsg{
+			username: username, following: following, err: err, request: request,
+		}
 	}
 }
 
@@ -667,6 +684,7 @@ func (m *Model) openComments() {
 		return
 	}
 	m.comments.Open(m.currentReel.PK)
+	m.comments.SetLoading(m.currentReel.Comments == nil)
 	m.relayout()
 
 	if m.currentReel.Comments != nil {
@@ -712,9 +730,18 @@ func (m *Model) closeShare() tea.Cmd {
 
 func (m *Model) startPlayback(index int) tea.Cmd {
 	info, infoErr := m.backend.GetReel(index)
+	if m.playbackGate == nil {
+		m.playbackGate = &playbackGate{}
+	}
+	gate := m.playbackGate
+	generation := gate.next()
+	pk, code := "", ""
+	if info != nil {
+		pk, code = info.PK, info.Code
+	}
 	return func() tea.Msg {
 		if infoErr != nil {
-			return videoErrorMsg{infoErr}
+			return videoErrorMsg{err: infoErr, generation: generation, pk: pk, code: code}
 		}
 		var videoPath, pfpPath string
 		var floatingFiles []backend.FloatingPfpFile
@@ -727,7 +754,7 @@ func (m *Model) startPlayback(index int) tea.Cmd {
 			videoPath, pfpPath, floatingFiles, err = m.backend.Download(index)
 		}
 		if err != nil {
-			return videoErrorMsg{err}
+			return videoErrorMsg{err: err, generation: generation, pk: pk, code: code}
 		}
 		var pfp *player.Img
 		if pfpPath != "" {
@@ -754,12 +781,67 @@ func (m *Model) startPlayback(index int) tea.Cmd {
 		// chat mode sender + reactions
 		chat := m.chatFloating(index)
 
-		if err := m.player.Play(videoPath); err != nil {
-			return videoErrorMsg{err}
+		committed, err := gate.commit(generation, func() error {
+			return m.player.Play(videoPath)
+		})
+		if !committed {
+			return nil
+		}
+		if err != nil {
+			return videoErrorMsg{err: err, generation: generation, pk: pk, code: code}
 		}
 
-		return videoReadyMsg{index: index, pfp: pfp, contextFloating: floating, chatFloating: chat}
+		return videoReadyMsg{
+			index: index, generation: generation, pk: pk, code: code,
+			pfp: pfp, contextFloating: floating, chatFloating: chat,
+		}
 	}
+}
+
+func (m *Model) invalidatePlayback() {
+	if m.playbackGate == nil {
+		m.playbackGate = &playbackGate{}
+	}
+	m.playbackGate.invalidate()
+}
+
+func (m *Model) acceptsPlayback(generation uint64, pk, code string) bool {
+	return m.playbackGate != nil &&
+		m.playbackGate.isCurrent(generation) &&
+		m.currentReel != nil &&
+		m.currentReel.PK == pk &&
+		m.currentReel.Code == code
+}
+
+// adoptReel changes every piece of owner-facing state as one transaction.
+// Static images from the previous reel are removed immediately, so there is
+// never a frame containing a new username and an old profile photo.
+func (m *Model) adoptReel(info *backend.ReelInfo) {
+	m.currentReel = info
+	m.status = statusLoading
+	m.marqueeOffset = 0
+	m.reelPFP = nil
+	m.reelFloating = nil
+	m.floating = nil
+	m.updateImages()
+}
+
+func (m *Model) stopPlaybackForTransition() {
+	// Stop first to release Play's session lock if a request is in its final
+	// commit. The generation invalidation then prevents every not-yet-committed
+	// request, and StopAndClear catches a commit that won the tiny first gap.
+	m.player.Stop()
+	m.invalidatePlayback()
+	if m.reelLoadGate == nil {
+		m.reelLoadGate = &playbackGate{}
+	}
+	m.reelLoadGate.invalidate()
+	m.player.StopAndClear()
+	m.status = statusLoading
+	m.reelPFP = nil
+	m.reelFloating = nil
+	m.floating = nil
+	m.updateImages()
 }
 
 func (m Model) prefetch(ctx context.Context, index int) {
@@ -861,13 +943,17 @@ func (m *Model) scrollPanel(direction int) bool {
 // discoverNextReel advances Instagram's lazy feed and waits for the newly
 // captured reel. Failure is retryable; it must never turn the current captured
 // total into a permanent end-of-feed.
-func (m Model) discoverNextReel(afterIndex int) tea.Cmd {
+func (m *Model) discoverNextReel(afterIndex int) tea.Cmd {
+	if m.reelLoadGate == nil {
+		m.reelLoadGate = &playbackGate{}
+	}
+	generation := m.reelLoadGate.next()
 	return func() tea.Msg {
 		info, err := m.backend.DiscoverNextReel(afterIndex)
 		if err != nil {
 			return feedMoreFailedMsg{}
 		}
-		return reelLoadedMsg{info: info}
+		return reelLoadedMsg{info: info, generation: generation}
 	}
 }
 
@@ -875,19 +961,20 @@ func (m Model) discoverNextReel(afterIndex int) tea.Cmd {
 // tail of the main feed it asks Instagram for another lazy page instead of
 // treating the cache boundary as the end.
 func (m *Model) navigateToReel(direction int) tea.Cmd {
-	if m.currentReel == nil || m.status == statusLoading || m.profileBusy {
+	if m.currentReel == nil || m.status == statusLoading || m.profileBusy || m.profileClosing {
 		return nil
 	}
 	if m.profileOpening {
 		if profile, ok := m.backend.(backend.ProfileBackend); ok {
 			go func() { _, _ = profile.ExitCreatorProfile() }()
 		}
+		m.profileRequest++
 		m.profileOpening = false
+		m.profileTarget = ""
 	}
 	index := m.currentReel.Index + direction
 	if m.backend.IsChatMode() && direction > 0 && index > m.backend.GetTotal() {
-		m.player.Stop()
-		m.status = statusLoading
+		m.stopPlaybackForTransition()
 		m.comments.Clear()
 		go m.backend.ExitChatMode()
 		m.player.SetBorder(nil)
@@ -901,40 +988,42 @@ func (m *Model) navigateToReel(direction int) tea.Cmd {
 		m.prefetchCancel = nil
 	}
 	if direction > 0 && index > m.backend.GetTotal() {
-		m.player.Stop()
-		m.status = statusLoading
+		m.stopPlaybackForTransition()
 		m.comments.Clear()
 		return m.discoverNextReel(m.currentReel.Index)
 	}
 	if index > m.backend.GetTotal() {
 		return nil
 	}
-	m.player.Stop()
-	m.status = statusLoading
+	m.stopPlaybackForTransition()
 	m.comments.Clear()
 	if profile, ok := m.backend.(backend.ProfileBackend); ok && profile.IsProfileMode() {
 		// Resolved/profile-prefetched entries can begin playback immediately;
 		// browser DOM alignment continues asynchronously and guards mutations
 		// through IsSyncing. Only a cache miss needs the blocking resolver path.
 		if info, err := m.backend.GetReel(index); err == nil {
-			m.currentReel = info
+			m.adoptReel(info)
 			go func() { _ = m.backend.SyncTo(index) }()
 			return m.startPlayback(index)
 		}
 		m.profileBusy = true
+		if m.reelLoadGate == nil {
+			m.reelLoadGate = &playbackGate{}
+		}
+		generation := m.reelLoadGate.next()
 		return func() tea.Msg {
 			if err := m.backend.SyncTo(index); err != nil {
-				return reelErrorMsg{err}
+				return reelErrorMsg{err: err, generation: generation}
 			}
 			info, err := m.backend.GetCurrent()
 			if err != nil {
-				return reelErrorMsg{err}
+				return reelErrorMsg{err: err, generation: generation}
 			}
-			return reelLoadedMsg{info: info}
+			return reelLoadedMsg{info: info, generation: generation}
 		}
 	}
 	if info, err := m.backend.GetReel(index); err == nil {
-		m.currentReel = info
+		m.adoptReel(info)
 	}
 	go m.backend.SyncTo(index)
 	return m.startPlayback(index)

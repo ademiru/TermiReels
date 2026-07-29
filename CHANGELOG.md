@@ -2,9 +2,28 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-29
+
 - Fix the Windows bootstrapper's case-sensitive WezTerm package lookup, refresh
   or repair the WinGet community source before retrying, and fall back to the
   official WezTerm installer only after verifying its published SHA-256 hash
+- Pin reel metadata, profile images and asynchronous playback results to the
+  reel PK and shortcode so delayed main/profile feed work cannot mix owners
+- Clear the previous Kitty frame during feed transitions and keep persistent
+  creator-entry and main-feed restoration feedback visible until completion
+- Preserve the active creator reel by shortcode when a hydrated profile grid
+  changes ordering
+- Prefer authenticated friendship requests for Follow actions, recover from
+  Instagram profile-API rejection through the exact profile's guarded button,
+  and require the resulting state to be confirmed before the TUI changes
+- Keep the Follow control attached to the visible reel owner and show a
+  persistent confirmation state while Instagram processes the request
+- Load initial comments from the authenticated media-PK endpoint before using
+  the open panel for pagination and replies, preventing empty comment cards
+- Prevent feed synchronization from guessing a direction while the DOM
+  identity is stale, and cancel superseded scroll operations at their source
+- Add regression coverage for stale reel loads, playback hand-off, creator
+  transitions, follow requests and down/up synchronization oscillation
 
 ## [1.5.0] - 2026-07-29
 

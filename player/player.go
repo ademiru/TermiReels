@@ -309,6 +309,22 @@ func (p *AVPlayer) Stop() {
 	})
 }
 
+// StopAndClear waits for the render loop to release the player, then removes
+// its last Kitty frame. Feed transitions use this stronger variant so the
+// previous video cannot remain visible underneath the next reel's metadata.
+func (p *AVPlayer) StopAndClear() {
+	p.Stop()
+	p.playMu.Lock()
+	p.playMu.Unlock()
+
+	p.configMu.Lock()
+	renderer := p.renderer
+	p.configMu.Unlock()
+	if renderer != nil {
+		renderer.Prune(map[int]bool{})
+	}
+}
+
 // Mute toggles mute state
 func (p *AVPlayer) Mute() {
 	p.muted.Store(!p.muted.Load())

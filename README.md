@@ -17,7 +17,7 @@ graphics-capable terminal. Chromium keeps the authenticated web session;
 TermiReels coordinates the feed, FFmpeg decodes the media, and the terminal
 draws each frame through the Kitty graphics protocol.
 
-`v1.5.0` · [Releases](https://github.com/ademiru/TermiReels/releases) ·
+`v1.5.1` · [Releases](https://github.com/ademiru/TermiReels/releases) ·
 [CI](https://github.com/ademiru/TermiReels/actions/workflows/ci.yml) ·
 [MIT](LICENSE)
 

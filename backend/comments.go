@@ -2,10 +2,13 @@ package backend
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/chromedp"
 )
 
 // commentNode is one comment as returned by both the top-level comments
@@ -46,6 +49,12 @@ type commentsResponse struct {
 			} `json:"page_info"`
 		} `json:"xdt_api__v1__media__media_id__comments__connection"`
 	} `json:"data"`
+}
+
+type initialCommentsResponse struct {
+	Comments []commentNode `json:"comments"`
+	Status   string        `json:"status"`
+	Message  string        `json:"message"`
 }
 
 // childCommentsResponse represents the child-comments (replies) connection
@@ -107,6 +116,75 @@ func (b *ChromeBackend) extractComments(edges []commentEdge, parentCommentID str
 	return comments
 }
 
+// fetchInitialComments loads the first comment page by immutable media PK.
+// It works in main, creator and chat feed modes without relying on a localized
+// Instagram button being present in the current DOM.
+func (b *ChromeBackend) fetchInitialComments(reelPK string) (int, error) {
+	if reelPK == "" {
+		return 0, fmt.Errorf("empty reel PK")
+	}
+	pkJSON, err := json.Marshal(reelPK)
+	if err != nil {
+		return 0, err
+	}
+	js := fmt.Sprintf(`(async () => {
+		const pk = %s;
+		const response = await fetch(
+			'/api/v1/media/' + encodeURIComponent(pk) +
+				'/comments/?can_support_threading=true&permalink_enabled=false',
+			{
+				credentials: 'include',
+				cache: 'no-store',
+				headers: {
+					'x-ig-app-id': '%s',
+					'x-asbd-id': '129477',
+					'x-requested-with': 'XMLHttpRequest'
+				}
+			}
+		);
+		const body = await response.text();
+		if (!response.ok) {
+			throw new Error('comments HTTP ' + response.status + ': ' + body.slice(0, 160));
+		}
+		return body;
+	})()`, string(pkJSON), expectedAppID)
+
+	var raw string
+	b.modeMu.RLock()
+	ctx := b.ctx
+	b.modeMu.RUnlock()
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &raw,
+		func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+			return p.WithAwaitPromise(true)
+		})); err != nil {
+		return 0, err
+	}
+
+	var response initialCommentsResponse
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return 0, fmt.Errorf("decode initial comments: %w", err)
+	}
+	if response.Status != "" && response.Status != "ok" {
+		return 0, fmt.Errorf("comments response %s: %s", response.Status, response.Message)
+	}
+
+	edges := make([]commentEdge, len(response.Comments))
+	for i, node := range response.Comments {
+		edges[i].Node = node
+	}
+	comments := b.extractComments(edges, "")
+	if comments == nil {
+		comments = make([]Comment, 0)
+	}
+	// Drop a result if the comments panel moved to another reel in flight.
+	if b.comments.GetReelPK() != reelPK {
+		return 0, fmt.Errorf("comments target changed")
+	}
+	b.replaceReelComments(reelPK, comments)
+	b.events <- Event{Type: EventCommentsCaptured, Count: len(comments)}
+	return len(comments), nil
+}
+
 // validateCommentsRequest checks that the intercepted request matches expected Instagram API shape.
 // Returns false if anything looks off, pagination will be silently disabled.
 func validateCommentsRequest(postData string, appID string) bool {
@@ -159,7 +237,7 @@ func (b *ChromeBackend) processCommentsResponse(body string, requestPostData str
 
 	reelPK := b.comments.GetReelPK()
 	if reelPK != "" {
-		b.updateReelComments(reelPK, comments)
+		b.replaceReelComments(reelPK, comments)
 	}
 
 	pageInfo := resp.Data.Connection.PageInfo

@@ -43,6 +43,7 @@ type ChromeBackend struct {
 	profileResolveMu     sync.Mutex
 	profileResolveCancel context.CancelFunc
 	creatorFollowMu      sync.RWMutex
+	creatorFollowOpMu    sync.Mutex
 	creatorFollowing     map[string]bool
 	creatorKnown         map[string]bool
 	creatorProviderMu    sync.Mutex
